@@ -34,9 +34,9 @@ async def test_send_audio_encodes_pcm():
         await client.connect()
         await client.send_audio(b"\x00\x01\x02\x03")
     sent = json.loads(ws.send.call_args.args[0])
-    chunk = sent["realtimeInput"]["mediaChunks"][0]
-    assert chunk["mimeType"] == "audio/pcm;rate=16000"
-    assert chunk["data"] == "AAECAw=="
+    audio = sent["realtimeInput"]["audio"]
+    assert audio["mimeType"] == "audio/pcm;rate=16000"
+    assert audio["data"] == "AAECAw=="
 
 
 @pytest.mark.asyncio

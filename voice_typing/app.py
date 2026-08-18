@@ -52,7 +52,16 @@ class WorkerThread(QThread):
         client = self._client
         loop = self._loop
         if client is not None and client.is_connected and loop is not None:
-            asyncio.run_coroutine_threadsafe(client.send_audio(audio_bytes), loop)
+            future = asyncio.run_coroutine_threadsafe(
+                client.send_audio(audio_bytes), loop
+            )
+            future.add_done_callback(self._on_audio_sent)
+
+    def _on_audio_sent(self, future) -> None:
+        try:
+            future.result()
+        except Exception:
+            pass
 
     def _on_hotkey(self, vk_code: int) -> None:
         if self._recording:

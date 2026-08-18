@@ -70,12 +70,10 @@ class GeminiLiveClient:
         b64_audio = base64.b64encode(audio_bytes).decode("ascii")
         msg = {
             "realtimeInput": {
-                "mediaChunks": [
-                    {
-                        "mimeType": "audio/pcm;rate=16000",
-                        "data": b64_audio,
-                    }
-                ]
+                "audio": {
+                    "mimeType": "audio/pcm;rate=16000",
+                    "data": b64_audio,
+                }
             }
         }
         await self._ws.send(json.dumps(msg))
