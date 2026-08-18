@@ -1,17 +1,16 @@
 # voice_typing/ui/settings_window.py
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QTabWidget,
     QVBoxLayout,
@@ -108,10 +107,20 @@ class SettingsWindow(QDialog):
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("api_key", self._api_key.text())
         self._settings.set("fast_mode", self._fast_mode.isChecked())
+        raw_hotkey = self._hotkey_input.text().strip()
         try:
-            self._settings.set("hotkey", int(self._hotkey_input.text(), 0))
+            hotkey = int(raw_hotkey, 0)
         except ValueError:
-            pass
+            QMessageBox.warning(
+                self, "Invalid Hotkey", "Hotkey must be a number or hex code, e.g. 0x7E."
+            )
+            return
+        if not (0 <= hotkey <= 0xFFFF):
+            QMessageBox.warning(
+                self, "Invalid Hotkey", "Hotkey code must be between 0 and 0xFFFF."
+            )
+            return
+        self._settings.set("hotkey", hotkey)
         self._settings.save()
         self.saved.emit()
         self.close()

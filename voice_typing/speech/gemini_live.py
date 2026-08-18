@@ -26,7 +26,6 @@ class GeminiLiveClient:
     async def connect(self) -> None:
         url = f"{LIVE_API_URL}?model=models/{self._model}&key={self._api_key}"
         self._ws = await websockets.connect(url)
-        self._connected = True
         setup_msg = {
             "setup": {
                 "model": f"models/{self._model}",
@@ -46,6 +45,7 @@ class GeminiLiveClient:
             }
         }
         await self._ws.send(json.dumps(setup_msg))
+        self._connected = True
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         if self._ws is None:
