@@ -5,6 +5,7 @@ import asyncio
 import sys
 import threading
 import time
+import winsound
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
@@ -19,6 +20,7 @@ from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
 from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
+from voice_typing.windows.startup import set_startup
 from voice_typing.windows.text_injector import TextInjector
 
 DEFAULT_HOTKEY = 0x78  # VK_F9
@@ -246,7 +248,9 @@ class VoiceTypeApp:
         self._status_bar.signals.exit_app.connect(self._exit)
         self._run_setup_wizard()
         self._tray.show()
-        self._status_bar.show()
+        if self._settings.get("show_status_bar", True):
+            self._status_bar.show()
+        set_startup(self._settings.get("start_with_windows", False))
         self._status_bar.set_hotkey_name(
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
@@ -280,13 +284,18 @@ class VoiceTypeApp:
     def _on_recording_started(self) -> None:
         self._tray.update_recording_state(True)
         self._status_bar.update_recording_state(True)
-        self._status_bar.show()
+        if self._settings.get("show_status_bar", True):
+            self._status_bar.show()
         self._status_bar.set_state("listening", "Listening...")
+        if self._settings.get("sound_feedback", True):
+            winsound.MessageBeep(winsound.MB_OK)
 
     def _on_recording_stopped(self) -> None:
         self._tray.update_recording_state(False)
         self._status_bar.update_recording_state(False)
         self._status_bar.set_state("ready")
+        if self._settings.get("sound_feedback", True):
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
     def _on_partial(self, text: str) -> None:
         self._status_bar.set_state("listening", text)
@@ -328,6 +337,7 @@ class VoiceTypeApp:
         self._status_bar.set_hotkey_name(
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
+        set_startup(self._settings.get("start_with_windows", False))
 
     def _run_setup_wizard(self) -> None:
         if self._settings.get("api_key"):
