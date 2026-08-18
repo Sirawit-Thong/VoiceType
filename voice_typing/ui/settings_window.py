@@ -23,6 +23,10 @@ from voice_typing.speech.gemini_live import MODEL, fetch_live_models
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
+def _normalize_model(name: str) -> str:
+    return name if name.startswith("models/") else f"models/{name}"
+
+
 class _ModelLoader(QThread):
     finished = Signal(list)
     failed = Signal(str)
@@ -131,7 +135,7 @@ class SettingsWindow(QDialog):
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(False)
-        current_model = self._settings.get("model", MODEL)
+        current_model = _normalize_model(self._settings.get("model", MODEL))
         self._model_combo.addItem(current_model, current_model)
         self._model_combo.setCurrentIndex(0)
         self._load_models_btn = QPushButton("Load models")
@@ -178,7 +182,7 @@ class SettingsWindow(QDialog):
     def _on_models_loaded(self, models: list) -> None:
         self._load_models_btn.setEnabled(True)
         self._load_models_btn.setText("Load models")
-        current = self._settings.get("model", MODEL)
+        current = _normalize_model(self._settings.get("model", MODEL))
         self._model_combo.clear()
         selected = 0
         for i, name in enumerate(models):

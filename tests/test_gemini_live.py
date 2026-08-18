@@ -40,6 +40,17 @@ async def test_send_audio_encodes_pcm():
 
 
 @pytest.mark.asyncio
+async def test_connect_normalizes_bare_model_name():
+    ws = AsyncMock()
+    ws.recv = AsyncMock(return_value="{}")
+    with patch("voice_typing.speech.gemini_live.websockets.connect", new=AsyncMock(return_value=ws)):
+        client = GeminiLiveClient(api_key="test-key", model="gemini-3.1-flash-live-preview")
+        await client.connect()
+    payload = json.loads(ws.send.call_args.args[0])
+    assert payload["setup"]["model"] == "models/gemini-3.1-flash-live-preview"
+
+
+@pytest.mark.asyncio
 async def test_receive_dispatches_partial_and_final():
     ws = AsyncMock()
     partial = MagicMock()

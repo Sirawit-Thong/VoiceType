@@ -14,7 +14,7 @@ from websockets.asyncio.client import ClientConnection
 
 LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-MODEL = "gemini-3.1-flash-live-preview"
+MODEL = "models/gemini-3.1-flash-live-preview"
 
 
 def fetch_live_models(api_key: str) -> list[str]:
@@ -27,13 +27,13 @@ def fetch_live_models(api_key: str) -> list[str]:
         raise RuntimeError(f"API error {exc.code}: {body}") from exc
     models = data.get("models", [])
     live = sorted(
-        m["name"].removeprefix("models/")
+        m["name"]
         for m in models
         if "bidiGenerateContent" in m.get("supportedGenerationMethods", [])
     )
     if live:
         return live
-    return sorted(m["name"].removeprefix("models/") for m in models)
+    return sorted(m["name"] for m in models)
 
 
 class GeminiLiveClient:
@@ -50,9 +50,14 @@ class GeminiLiveClient:
     async def connect(self) -> None:
         url = f"{LIVE_API_URL}?key={self._api_key}"
         self._ws = await websockets.connect(url)
+        model_name = (
+            self._model
+            if self._model.startswith("models/")
+            else f"models/{self._model}"
+        )
         setup_msg = {
             "setup": {
-                "model": f"models/{self._model}",
+                "model": model_name,
                 "generationConfig": {"responseModalities": ["AUDIO"]},
                 "systemInstruction": {
                     "parts": [

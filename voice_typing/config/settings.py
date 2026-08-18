@@ -8,7 +8,7 @@ from typing import Any
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
-    "model": "gemini-3.1-flash-live-preview",
+    "model": "models/gemini-3.1-flash-live-preview",
     "mode": "push_to_talk",
     "hotkey": 0x78,
     "language": "auto",
