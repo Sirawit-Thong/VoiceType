@@ -161,6 +161,8 @@ class WorkerThread(QThread):
                     time.sleep(3)
             if self._client is None or not self._client.is_connected:
                 return
+            if self._loop is None:
+                return
             if not self._settings.get("fast_mode", True):
                 self._processor = TextProcessor(api_key=api_key)
             while self._client.is_connected and not self._should_stop:
@@ -205,11 +207,13 @@ class VoiceTypeApp:
         return self._qapp.exec()
 
     def _start_recording(self) -> None:
-        if self._worker is None or not self._worker.isRunning():
+        worker = self._worker
+        if worker is None or not worker.isRunning():
             self._spawn_worker()
-            self._worker._start_recording()
+            worker = self._worker
+        if worker is None:
             return
-        self._worker._start_recording()
+        worker._start_recording()
 
     def _spawn_worker(self) -> None:
         if self._worker is not None:
