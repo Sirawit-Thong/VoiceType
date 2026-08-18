@@ -6,18 +6,34 @@ from voice_typing.windows.startup import set_startup
 
 def test_set_startup_enabled_writes_registry():
     fake_key = MagicMock()
-    with patch("voice_typing.windows.startup.winreg.OpenKey", return_value=fake_key):
+    with (
+        patch("voice_typing.windows.startup.winreg.OpenKey", return_value=fake_key),
+        patch("voice_typing.windows.startup.winreg.SetValueEx") as set_value,
+    ):
         assert set_startup(True) is True
-    key = fake_key.__enter__.return_value
-    key.SetValueEx.assert_called_once()
-    assert key.SetValueEx.call_args.args[0] == "VoiceType"
+    set_value.assert_called_once()
+    assert set_value.call_args.args[1] == "VoiceType"
 
 
 def test_set_startup_disabled_deletes_value():
     fake_key = MagicMock()
-    with patch("voice_typing.windows.startup.winreg.OpenKey", return_value=fake_key):
+    with (
+        patch("voice_typing.windows.startup.winreg.OpenKey", return_value=fake_key),
+        patch("voice_typing.windows.startup.winreg.DeleteValue") as del_value,
+    ):
         assert set_startup(False) is True
-    fake_key.__enter__.return_value.DeleteValue.assert_called_once()
+    del_value.assert_called_once()
+
+
+def test_set_startup_disabled_ignores_missing_value():
+    with (
+        patch("voice_typing.windows.startup.winreg.OpenKey", return_value=MagicMock()),
+        patch(
+            "voice_typing.windows.startup.winreg.DeleteValue",
+            side_effect=FileNotFoundError,
+        ),
+    ):
+        assert set_startup(False) is True
 
 
 def test_set_startup_handles_registry_error():
