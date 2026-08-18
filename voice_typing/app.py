@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
@@ -175,6 +175,7 @@ class VoiceTypeApp:
         self._tray.signals.open_settings.connect(self._open_settings)
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
+        self._run_setup_wizard()
         self._tray.show()
         return self._qapp.exec()
 
@@ -218,6 +219,22 @@ class VoiceTypeApp:
         if self._settings_win is None:
             self._settings_win = SettingsWindow(self._settings)
         self._settings_win.show()
+
+    def _run_setup_wizard(self) -> None:
+        if self._settings.get("api_key"):
+            return
+        api_key, ok = QInputDialog.getText(
+            None, "VoiceType Setup", "Enter your Gemini API Key:"
+        )
+        if ok and api_key.strip():
+            self._settings.set("api_key", api_key.strip())
+            self._settings.save()
+        else:
+            QMessageBox.warning(
+                None,
+                "VoiceType Setup",
+                "No API key entered. You can configure it later in Settings.",
+            )
 
     def _exit(self) -> None:
         if self._worker is not None and self._worker.isRunning():
