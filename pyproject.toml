@@ -8,6 +8,7 @@ dependencies = [
     "sounddevice>=0.4.6",
     "websockets>=12.0",
     "pyperclip>=1.8.2",
+    "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]

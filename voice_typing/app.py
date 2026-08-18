@@ -62,8 +62,12 @@ class WorkerThread(QThread):
         with self._lock:
             if self._recording:
                 return
+            try:
+                self._recorder.start(callback=self._on_audio_chunk)
+            except Exception:
+                self._signals.error.emit("Failed to start microphone")
+                return
             self._recording = True
-            self._recorder.start(callback=self._on_audio_chunk)
         self._signals.recording_started.emit()
 
     def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
@@ -175,6 +179,7 @@ class VoiceTypeApp:
         self._tray.signals.open_settings.connect(self._open_settings)
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
+        self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._run_setup_wizard()
         self._tray.show()
         return self._qapp.exec()
@@ -209,7 +214,22 @@ class VoiceTypeApp:
         self._status_bar.set_state("listening", text)
 
     def _on_error(self, msg: str) -> None:
+        self._status_bar.show()
         self._status_bar.set_state("error", msg)
+
+    def _on_test_microphone(self) -> None:
+        try:
+            rec = AudioRecorder()
+            rec.start(callback=lambda b: None)
+            QThread.msleep(300)
+            rec.stop()
+            QMessageBox.information(
+                None, "Microphone Test", "Microphone is working."
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                None, "Microphone Test", f"Microphone error: {e}"
+            )
 
     def _on_mode_changed(self, mode: str) -> None:
         self._settings.set("mode", mode)
@@ -240,7 +260,7 @@ class VoiceTypeApp:
         if self._worker is not None and self._worker.isRunning():
             self._worker._finalize_and_inject()
             self._worker._should_stop = True
-            self._worker.wait(6000)
+            self._worker.wait(15000)
         self._status_bar.close()
         self._tray.hide()
         self._qapp.quit()
