@@ -94,6 +94,12 @@ class SettingsWindow(QDialog):
         self._api_key.setText(self._settings.get("api_key", ""))
         layout.addRow("API Key:", self._api_key)
 
+        self._model = QLineEdit()
+        self._model.setText(
+            self._settings.get("model", "gemini-3.1-flash-live-preview")
+        )
+        layout.addRow("Model:", self._model)
+
         self._fast_mode = QCheckBox()
         self._fast_mode.setChecked(self._settings.get("fast_mode", True))
         layout.addRow("Fast Mode (skip AI processing):", self._fast_mode)
@@ -106,13 +112,14 @@ class SettingsWindow(QDialog):
         lang_map = {0: "auto", 1: "thai", 2: "english"}
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("api_key", self._api_key.text())
+        self._settings.set("model", self._model.text().strip())
         self._settings.set("fast_mode", self._fast_mode.isChecked())
         raw_hotkey = self._hotkey_input.text().strip()
         try:
             hotkey = int(raw_hotkey, 0)
         except ValueError:
             QMessageBox.warning(
-                self, "Invalid Hotkey", "Hotkey must be a number or hex code, e.g. 0x7E."
+                self, "Invalid Hotkey", "Hotkey must be a number or hex code, e.g. 0x78."
             )
             return
         if not (0 <= hotkey <= 0xFFFF):

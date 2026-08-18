@@ -10,7 +10,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
-MODEL = "gemini-2.0-flash-live-001"
+MODEL = "gemini-3.1-flash-live-preview"
 
 
 class GeminiLiveClient:
@@ -25,20 +25,13 @@ class GeminiLiveClient:
         return self._connected
 
     async def connect(self) -> None:
-        url = f"{LIVE_API_URL}?model=models/{self._model}&key={self._api_key}"
+        url = f"{LIVE_API_URL}?key={self._api_key}"
         self._ws = await websockets.connect(url)
         setup_msg = {
             "setup": {
                 "model": f"models/{self._model}",
-                "generation_config": {
-                    "response_modalities": ["TEXT"],
-                    "speech_config": {
-                        "voice_config": {
-                            "prebuilt_voice_config": {"voice_name": "Aoede"}
-                        }
-                    },
-                },
-                "system_instruction": {
+                "generationConfig": {"responseModalities": ["AUDIO"]},
+                "systemInstruction": {
                     "parts": [
                         {"text": "You are a speech-to-text transcription service. Transcribe exactly what the user says. Support both Thai and English. Output only the transcription, nothing else."}
                     ]
@@ -75,17 +68,10 @@ class GeminiLiveClient:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
             data = json.loads(raw)
             if "serverContent" in data:
-                parts = (
-                    data["serverContent"]
-                    .get("modelTurn", {})
-                    .get("parts", [])
-                )
-                text = "".join(p.get("text", "") for p in parts)
+                sc = data["serverContent"]
+                text = sc.get("inputTranscription", {}).get("text", "")
                 if text:
-                    is_turn_complete = data["serverContent"].get(
-                        "turnComplete", False
-                    )
-                    if is_turn_complete:
+                    if sc.get("turnComplete", False):
                         on_final(text)
                     else:
                         on_partial(text)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
@@ -13,7 +14,7 @@ from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager
 from voice_typing.speech.engine import TranscriptBuffer
-from voice_typing.speech.gemini_live import GeminiLiveClient
+from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
@@ -134,22 +135,34 @@ class WorkerThread(QThread):
         if not api_key:
             self._signals.error.emit("No API key configured")
             return
-        try:
-            self._client = GeminiLiveClient(api_key=api_key)
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._client.connect())
-        except Exception:
-            self._signals.error.emit("Failed to connect to Gemini Live")
-            self._cleanup()
-            return
-        if not self._settings.get("fast_mode", True):
-            self._processor = TextProcessor(api_key=api_key)
         self._hotkey_mgr.register(
             self._settings.get("hotkey", DEFAULT_HOTKEY), self._on_hotkey
         )
         self._hotkey_mgr.start()
         try:
+            while not self._should_stop:
+                self._client = GeminiLiveClient(
+                    api_key=api_key,
+                    model=self._settings.get("model") or MODEL,
+                )
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+                try:
+                    self._loop.run_until_complete(self._client.connect())
+                    break
+                except Exception:
+                    self._signals.error.emit("Failed to connect to Gemini Live")
+                    if self._loop is not None:
+                        self._loop.close()
+                        self._loop = None
+                    self._client = None
+                    if self._should_stop:
+                        return
+                    time.sleep(3)
+            if self._client is None or not self._client.is_connected:
+                return
+            if not self._settings.get("fast_mode", True):
+                self._processor = TextProcessor(api_key=api_key)
             while self._client.is_connected and not self._should_stop:
                 self._loop.run_until_complete(
                     self._client.receive_transcript(
@@ -181,13 +194,25 @@ class VoiceTypeApp:
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
+        self._status_bar.signals.start_recording.connect(self._start_recording)
+        self._status_bar.signals.stop_recording.connect(self._stop_recording)
+        self._status_bar.signals.open_settings.connect(self._open_settings)
+        self._status_bar.signals.exit_app.connect(self._exit)
         self._run_setup_wizard()
         self._tray.show()
+        self._status_bar.show()
+        self._spawn_worker()
         return self._qapp.exec()
 
     def _start_recording(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker is None or not self._worker.isRunning():
+            self._spawn_worker()
             self._worker._start_recording()
+            return
+        self._worker._start_recording()
+
+    def _spawn_worker(self) -> None:
+        if self._worker is not None:
             return
         self._worker = WorkerThread(self._settings)
         self._worker._signals.recording_started.connect(self._on_recording_started)
@@ -202,14 +227,14 @@ class VoiceTypeApp:
 
     def _on_recording_started(self) -> None:
         self._tray.update_recording_state(True)
-        if self._settings.get("show_status_bar", True):
-            self._status_bar.show()
-            self._status_bar.set_state("listening", "Listening...")
+        self._status_bar.update_recording_state(True)
+        self._status_bar.show()
+        self._status_bar.set_state("listening", "Listening...")
 
     def _on_recording_stopped(self) -> None:
         self._tray.update_recording_state(False)
+        self._status_bar.update_recording_state(False)
         self._status_bar.set_state("ready")
-        self._status_bar.hide()
 
     def _on_partial(self, text: str) -> None:
         self._status_bar.set_state("listening", text)

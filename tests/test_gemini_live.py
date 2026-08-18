@@ -20,9 +20,9 @@ async def test_connect_sends_setup_message():
         await client.connect()
     sent = ws.send.call_args.args[0]
     payload = json.loads(sent)
-    assert payload["setup"]["model"] == "models/gemini-2.0-flash-live-001"
-    assert payload["setup"]["generation_config"]["response_modalities"] == ["TEXT"]
-    assert "transcribe" in payload["setup"]["system_instruction"]["parts"][0]["text"].lower()
+    assert payload["setup"]["model"] == "models/gemini-3.1-flash-live-preview"
+    assert payload["setup"]["generationConfig"]["responseModalities"] == ["AUDIO"]
+    assert "transcribe" in payload["setup"]["systemInstruction"]["parts"][0]["text"].lower()
 
 
 @pytest.mark.asyncio
@@ -45,8 +45,8 @@ async def test_receive_dispatches_partial_and_final():
     partial = MagicMock()
     final = MagicMock()
     ws.recv = AsyncMock(side_effect=[
-        json.dumps({"serverContent": {"modelTurn": {"parts": [{"text": "hello"}]}, "turnComplete": False}}),
-        json.dumps({"serverContent": {"modelTurn": {"parts": [{"text": "hello world"}]}, "turnComplete": True}}),
+        json.dumps({"serverContent": {"inputTranscription": {"text": "hello"}, "turnComplete": False}}),
+        json.dumps({"serverContent": {"inputTranscription": {"text": "hello world"}, "turnComplete": True}}),
     ])
     with patch("voice_typing.speech.gemini_live.websockets.connect", new=AsyncMock(return_value=ws)):
         client = GeminiLiveClient(api_key="test-key")
