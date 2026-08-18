@@ -13,6 +13,64 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("union", _INPUTUNION),
+    ]
+
+
+INPUT_KEYBOARD = 1
+
+
+def _send_unicode_char(char: str) -> bool:
+    for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+        inp = INPUT(
+            INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, ord(char), flags, 0, None))
+        )
+        sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if sent != 1:
+            return False
+    return True
+
+
 def _send_key_down(vk: int) -> None:
     user32.keybd_event(vk, 0, 0, 0)
 
@@ -65,13 +123,7 @@ class TextInjector:
     def _send_char(self, char: str) -> bool:
         codes = _char_to_vk_sc(char)
         if codes is None:
-            user32.keybd_event(0, ord(char), KEYEVENTF_UNICODE, 0)
-            time.sleep(0.001)
-            user32.keybd_event(
-                0, ord(char), KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0
-            )
-            time.sleep(0.001)
-            return True
+            return self._send_unicode_char(char)
         for vk, sc, hold in codes:
             _send_key_down(vk)
             time.sleep(0.001)
