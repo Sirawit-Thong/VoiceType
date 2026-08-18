@@ -40,6 +40,17 @@ class StatusBar:
         self._transcript_label: QLabel | None = None
         self._toggle_button: QPushButton | None = None
         self._recording = False
+        self._hotkey_name = "F9"
+
+    def set_hotkey_name(self, name: str) -> None:
+        self._hotkey_name = name
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        if self._transcript_label is not None and not self._recording:
+            self._transcript_label.setText(
+                f"Press {self._hotkey_name} or click Start to record."
+            )
 
     def _build_window(self) -> _ControlWindow:
         win = _ControlWindow(self.hide)
@@ -51,7 +62,7 @@ class StatusBar:
         self._status_label = QLabel("🟢 Ready")
         self._status_label.setStyleSheet("font-size: 15px; font-weight: bold;")
 
-        self._transcript_label = QLabel("Press F9 or click Start to record.")
+        self._transcript_label = QLabel("")
         self._transcript_label.setWordWrap(True)
         self._transcript_label.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
@@ -74,6 +85,7 @@ class StatusBar:
         layout.addWidget(self._status_label)
         layout.addWidget(self._transcript_label, 1)
         layout.addLayout(buttons)
+        self._update_hint()
         return win
 
     def _on_toggle(self) -> None:
@@ -106,6 +118,8 @@ class StatusBar:
             self._toggle_button.setText(
                 "Stop Recording" if recording else "Start Recording"
             )
+        if not recording:
+            self._update_hint()
 
     def set_state(self, state: str, text: str = "") -> None:
         icons = {"ready": "🟢", "listening": "🔴", "processing": "⚡", "error": "⚪"}

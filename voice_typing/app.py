@@ -18,7 +18,7 @@ from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
-from voice_typing.windows.hotkey import HotkeyManager
+from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
 from voice_typing.windows.text_injector import TextInjector
 
 DEFAULT_HOTKEY = 0x78  # VK_F9
@@ -203,6 +203,9 @@ class VoiceTypeApp:
         self._run_setup_wizard()
         self._tray.show()
         self._status_bar.show()
+        self._status_bar.set_hotkey_name(
+            hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
+        )
         self._spawn_worker()
         return self._qapp.exec()
 
@@ -268,7 +271,13 @@ class VoiceTypeApp:
     def _open_settings(self) -> None:
         if self._settings_win is None:
             self._settings_win = SettingsWindow(self._settings)
+            self._settings_win.saved.connect(self._on_settings_saved)
         self._settings_win.show()
+
+    def _on_settings_saved(self) -> None:
+        self._status_bar.set_hotkey_name(
+            hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
+        )
 
     def _run_setup_wizard(self) -> None:
         if self._settings.get("api_key"):

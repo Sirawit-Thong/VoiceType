@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QMessageBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from voice_typing.config.settings import SettingsManager
+from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
 class SettingsWindow(QDialog):
@@ -68,8 +70,25 @@ class SettingsWindow(QDialog):
     def _hotkey_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        self._hotkey_input = QLineEdit(hex(self._settings.get("hotkey", 0x78)))
-        layout.addRow("Push-to-Talk key:", self._hotkey_input)
+        current = self._settings.get("hotkey", 0x78)
+        self._hotkey_combo = QComboBox()
+        selected = 0
+        for i, (name, code) in enumerate(HOTKEY_OPTIONS):
+            self._hotkey_combo.addItem(f"{name} ({hex(code)})", code)
+            if code == current:
+                selected = i
+        if self._hotkey_combo.itemData(selected) != current:
+            self._hotkey_combo.addItem(f"Custom ({hex(current)})", current)
+            selected = self._hotkey_combo.count() - 1
+        self._hotkey_combo.setCurrentIndex(selected)
+        layout.addRow("Push-to-Talk key:", self._hotkey_combo)
+        hint = QLabel(
+            f"Currently using: {hotkey_name(current)} — "
+            "press this key once to start recording, once to finalize and type."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9aa0a6;")
+        layout.addRow("", hint)
         return w
 
     def _speech_tab(self) -> QWidget:
@@ -114,20 +133,7 @@ class SettingsWindow(QDialog):
         self._settings.set("api_key", self._api_key.text())
         self._settings.set("model", self._model.text().strip())
         self._settings.set("fast_mode", self._fast_mode.isChecked())
-        raw_hotkey = self._hotkey_input.text().strip()
-        try:
-            hotkey = int(raw_hotkey, 0)
-        except ValueError:
-            QMessageBox.warning(
-                self, "Invalid Hotkey", "Hotkey must be a number or hex code, e.g. 0x78."
-            )
-            return
-        if not (0 <= hotkey <= 0xFFFF):
-            QMessageBox.warning(
-                self, "Invalid Hotkey", "Hotkey code must be between 0 and 0xFFFF."
-            )
-            return
-        self._settings.set("hotkey", hotkey)
+        self._settings.set("hotkey", int(self._hotkey_combo.currentData()))
         self._settings.save()
         self.saved.emit()
         self.close()

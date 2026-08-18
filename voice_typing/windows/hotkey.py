@@ -15,6 +15,28 @@ WM_QUIT = 0x0012
 WM_UNREGISTER = 0x0400
 MOD_NONE = 0x0000
 
+HOTKEY_OPTIONS: list[tuple[str, int]] = [
+    ("F6", 0x75),
+    ("F7", 0x76),
+    ("F8", 0x77),
+    ("F9", 0x78),
+    ("F10", 0x79),
+    ("F11", 0x7A),
+    ("F12", 0x7B),
+    ("Scroll Lock", 0x91),
+    ("Caps Lock", 0x14),
+    ("Insert", 0x2D),
+    ("Home", 0x24),
+    ("End", 0x23),
+]
+
+
+def hotkey_name(vk_code: int) -> str:
+    for name, code in HOTKEY_OPTIONS:
+        if code == vk_code:
+            return name
+    return f"0x{vk_code:X}"
+
 
 class HotkeyManager:
     def __init__(self) -> None:
