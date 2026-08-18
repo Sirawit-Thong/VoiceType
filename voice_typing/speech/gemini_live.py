@@ -4,13 +4,36 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import urllib.error
+import urllib.request
 from typing import Callable
+from urllib.parse import quote
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
 LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL = "gemini-3.1-flash-live-preview"
+
+
+def fetch_live_models(api_key: str) -> list[str]:
+    url = f"{REST_MODELS_URL}?key={quote(api_key)}&pageSize=1000"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(f"API error {exc.code}: {body}") from exc
+    models = data.get("models", [])
+    live = sorted(
+        m["name"].removeprefix("models/")
+        for m in models
+        if "bidiGenerateContent" in m.get("supportedGenerationMethods", [])
+    )
+    if live:
+        return live
+    return sorted(m["name"].removeprefix("models/") for m in models)
 
 
 class GeminiLiveClient:
@@ -77,6 +100,9 @@ class GeminiLiveClient:
                         on_partial(text)
         except asyncio.TimeoutError:
             pass
+        except Exception:
+            self._connected = False
+            raise
 
     async def disconnect(self) -> None:
         if self._ws is not None:

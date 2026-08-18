@@ -29,6 +29,7 @@ class WorkerSignals(QObject):
     recording_started = Signal()
     recording_stopped = Signal()
     error = Signal(str)
+    status = Signal(str)
 
 
 class WorkerThread(QThread):
@@ -62,6 +63,12 @@ class WorkerThread(QThread):
     def _start_recording(self) -> None:
         with self._lock:
             if self._recording:
+                return
+            client = self._client
+            if client is None or not client.is_connected:
+                self._signals.error.emit(
+                    "Not connected to Gemini Live yet - wait a moment and press the hotkey again"
+                )
                 return
             try:
                 self._recorder.start(callback=self._on_audio_chunk)
@@ -139,7 +146,9 @@ class WorkerThread(QThread):
             self._settings.get("hotkey", DEFAULT_HOTKEY), self._on_hotkey
         )
         self._hotkey_mgr.start()
+        last_error = ""
         try:
+            self._signals.status.emit("Connecting to Gemini Live...")
             while not self._should_stop:
                 self._client = GeminiLiveClient(
                     api_key=api_key,
@@ -150,8 +159,8 @@ class WorkerThread(QThread):
                 try:
                     self._loop.run_until_complete(self._client.connect())
                     break
-                except Exception:
-                    self._signals.error.emit("Failed to connect to Gemini Live")
+                except Exception as exc:
+                    last_error = str(exc)
                     if self._loop is not None:
                         self._loop.close()
                         self._loop = None
@@ -160,6 +169,10 @@ class WorkerThread(QThread):
                         return
                     time.sleep(3)
             if self._client is None or not self._client.is_connected:
+                self._signals.error.emit(
+                    "Cannot connect to Gemini Live: "
+                    f"{last_error[:300] or 'unknown error'} - check your API key and internet"
+                )
                 return
             if self._loop is None:
                 return
@@ -171,8 +184,10 @@ class WorkerThread(QThread):
                         on_partial=self._on_partial, on_final=self._on_final
                     )
                 )
-        except Exception:
-            self._signals.error.emit("Speech engine connection lost")
+        except Exception as exc:
+            self._signals.error.emit(
+                f"Speech engine connection lost: {str(exc)[:300]}"
+            )
         finally:
             self._cleanup()
 
@@ -226,6 +241,7 @@ class VoiceTypeApp:
         self._worker._signals.recording_stopped.connect(self._on_recording_stopped)
         self._worker._signals.partial_received.connect(self._on_partial)
         self._worker._signals.error.connect(self._on_error)
+        self._worker._signals.status.connect(self._on_status)
         self._worker.start()
 
     def _stop_recording(self) -> None:
@@ -249,6 +265,9 @@ class VoiceTypeApp:
     def _on_error(self, msg: str) -> None:
         self._status_bar.show()
         self._status_bar.set_state("error", msg)
+
+    def _on_status(self, msg: str) -> None:
+        self._status_bar.set_state("ready", msg)
 
     def _on_test_microphone(self) -> None:
         try:

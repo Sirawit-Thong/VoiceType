@@ -1,7 +1,7 @@
 # voice_typing/ui/settings_window.py
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,7 +19,23 @@ from PySide6.QtWidgets import (
 )
 
 from voice_typing.config.settings import SettingsManager
+from voice_typing.speech.gemini_live import MODEL, fetch_live_models
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
+
+
+class _ModelLoader(QThread):
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, api_key: str) -> None:
+        super().__init__()
+        self._api_key = api_key
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(fetch_live_models(self._api_key))
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class SettingsWindow(QDialog):
@@ -113,11 +129,17 @@ class SettingsWindow(QDialog):
         self._api_key.setText(self._settings.get("api_key", ""))
         layout.addRow("API Key:", self._api_key)
 
-        self._model = QLineEdit()
-        self._model.setText(
-            self._settings.get("model", "gemini-3.1-flash-live-preview")
-        )
-        layout.addRow("Model:", self._model)
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(False)
+        current_model = self._settings.get("model", MODEL)
+        self._model_combo.addItem(current_model, current_model)
+        self._model_combo.setCurrentIndex(0)
+        self._load_models_btn = QPushButton("Load models")
+        self._load_models_btn.clicked.connect(self._load_models)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self._model_combo, 1)
+        model_row.addWidget(self._load_models_btn)
+        layout.addRow("Model:", model_row)
 
         self._fast_mode = QCheckBox()
         self._fast_mode.setChecked(self._settings.get("fast_mode", True))
@@ -131,9 +153,46 @@ class SettingsWindow(QDialog):
         lang_map = {0: "auto", 1: "thai", 2: "english"}
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("api_key", self._api_key.text())
-        self._settings.set("model", self._model.text().strip())
+        self._settings.set("model", str(self._model_combo.currentData()))
         self._settings.set("fast_mode", self._fast_mode.isChecked())
         self._settings.set("hotkey", int(self._hotkey_combo.currentData()))
         self._settings.save()
         self.saved.emit()
         self.close()
+
+    def _load_models(self) -> None:
+        api_key = self._api_key.text().strip()
+        if not api_key:
+            QMessageBox.warning(
+                self, "API Key Required", "Enter your Gemini API key first."
+            )
+            return
+        self._load_models_btn.setEnabled(False)
+        self._load_models_btn.setText("Loading...")
+        loader = _ModelLoader(api_key)
+        loader.finished.connect(self._on_models_loaded)
+        loader.failed.connect(self._on_models_failed)
+        loader.start()
+        self._model_loader = loader
+
+    def _on_models_loaded(self, models: list) -> None:
+        self._load_models_btn.setEnabled(True)
+        self._load_models_btn.setText("Load models")
+        current = self._settings.get("model", MODEL)
+        self._model_combo.clear()
+        selected = 0
+        for i, name in enumerate(models):
+            self._model_combo.addItem(name, name)
+            if name == current:
+                selected = i
+        if self._model_combo.itemData(selected) != current:
+            self._model_combo.addItem(f"Custom: {current}", current)
+            selected = self._model_combo.count() - 1
+        self._model_combo.setCurrentIndex(selected)
+
+    def _on_models_failed(self, reason: str) -> None:
+        self._load_models_btn.setEnabled(True)
+        self._load_models_btn.setText("Load models")
+        QMessageBox.warning(
+            self, "Load Models Failed", f"Could not fetch models:\n{reason[:400]}"
+        )
