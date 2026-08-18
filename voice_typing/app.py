@@ -43,7 +43,6 @@ class WorkerThread(QThread):
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
-        self._is_toggle_mode = self._settings.get("mode", "push_to_talk") == "toggle"
         self._recording = False
         self._should_stop = False
 
@@ -67,6 +66,13 @@ class WorkerThread(QThread):
             self._recorder.start(callback=self._on_audio_chunk)
         self._signals.recording_started.emit()
 
+    def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
+        try:
+            text = future.result()
+        except Exception:
+            text = raw
+        self._injector.inject(text)
+
     def _finalize_and_inject(self) -> None:
         with self._lock:
             if not self._recording:
@@ -77,7 +83,19 @@ class WorkerThread(QThread):
         text = self._buffer.finalize()
         if not text.strip():
             return
-        if self._processor is not None and self._loop is not None:
+        if self._processor is None or self._loop is None:
+            self._injector.inject(text)
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._loop:
+            future = asyncio.ensure_future(self._processor.process(text))
+            future.add_done_callback(
+                lambda f: self._inject_processed(f, text)
+            )
+        else:
             future = asyncio.run_coroutine_threadsafe(
                 self._processor.process(text), self._loop
             )
@@ -85,7 +103,7 @@ class WorkerThread(QThread):
                 text = future.result(timeout=4)
             except Exception:
                 pass
-        self._injector.inject(text)
+            self._injector.inject(text)
 
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
