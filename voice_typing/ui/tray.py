@@ -89,6 +89,10 @@ class TrayIcon:
         self._build_menu()
         self.signals.mode_changed.emit(mode)
 
+    def set_mode(self, mode: str) -> None:
+        self._mode = mode
+        self._build_menu()
+
     def update_recording_state(self, recording: bool) -> None:
         self._recording = recording
         self._build_menu()

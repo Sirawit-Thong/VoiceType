@@ -74,6 +74,14 @@ class SettingsWindow(QDialog):
     def _general_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
+
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("Push-to-Talk (hold to record)", "push_to_talk")
+        self._mode_combo.addItem("Toggle (press to start/stop)", "toggle")
+        mode = self._settings.get("mode", "push_to_talk")
+        self._mode_combo.setCurrentIndex(0 if mode == "push_to_talk" else 1)
+        layout.addRow("Mode:", self._mode_combo)
+
         self._start_windows = QCheckBox()
         self._start_windows.setChecked(self._settings.get("start_with_windows", False))
         layout.addRow("Start with Windows:", self._start_windows)
@@ -153,6 +161,7 @@ class SettingsWindow(QDialog):
         return w
 
     def _save_and_close(self) -> None:
+        self._settings.set("mode", str(self._mode_combo.currentData()))
         self._settings.set("start_with_windows", self._start_windows.isChecked())
         self._settings.set("show_status_bar", self._show_status.isChecked())
         self._settings.set("sound_feedback", self._sound_feedback.isChecked())

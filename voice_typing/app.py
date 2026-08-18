@@ -337,6 +337,9 @@ class VoiceTypeApp:
         self._status_bar.set_hotkey_name(
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
+        self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
+        if self._worker is not None:
+            self._worker.reconfigure_hotkey()
         set_startup(self._settings.get("start_with_windows", False))
 
     def _run_setup_wizard(self) -> None:
