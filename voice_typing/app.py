@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
@@ -19,10 +20,11 @@ from voice_typing.ui.tray import TrayIcon
 from voice_typing.windows.hotkey import HotkeyManager
 from voice_typing.windows.text_injector import TextInjector
 
+DEFAULT_HOTKEY = 0x78  # VK_F9
+
 
 class WorkerSignals(QObject):
     partial_received = Signal(str)
-    final_received = Signal(str)
     recording_started = Signal()
     recording_stopped = Signal()
     error = Signal(str)
@@ -40,8 +42,10 @@ class WorkerThread(QThread):
         self._client: GeminiLiveClient | None = None
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._is_toggle_mode = False
+        self._lock = threading.Lock()
+        self._is_toggle_mode = self._settings.get("mode", "push_to_talk") == "toggle"
         self._recording = False
+        self._should_stop = False
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         if self._client is not None and self._client.is_connected:
@@ -50,29 +54,38 @@ class WorkerThread(QThread):
             )
 
     def _on_hotkey(self, vk_code: int) -> None:
-        if self._is_toggle_mode:
-            if self._recording:
-                self._finalize_and_inject()
-            else:
-                self._start_recording()
+        if self._recording:
+            self._finalize_and_inject()
         else:
-            if self._recording:
-                self._finalize_and_inject()
+            self._start_recording()
 
     def _start_recording(self) -> None:
-        if self._recording:
-            return
-        self._recording = True
+        with self._lock:
+            if self._recording:
+                return
+            self._recording = True
+            self._recorder.start(callback=self._on_audio_chunk)
         self._signals.recording_started.emit()
-        self._recorder.start(callback=self._on_audio_chunk)
 
     def _finalize_and_inject(self) -> None:
-        self._recorder.stop()
-        self._recording = False
+        with self._lock:
+            if not self._recording:
+                return
+            self._recorder.stop()
+            self._recording = False
         self._signals.recording_stopped.emit()
         text = self._buffer.finalize()
-        if text.strip():
-            self._injector.inject(text)
+        if not text.strip():
+            return
+        if self._processor is not None and self._loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._processor.process(text), self._loop
+            )
+            try:
+                text = future.result(timeout=4)
+            except Exception:
+                pass
+        self._injector.inject(text)
 
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
@@ -82,33 +95,48 @@ class WorkerThread(QThread):
         self._buffer.add_partial(text)
         self._finalize_and_inject()
 
+    def _cleanup(self) -> None:
+        if self._client is not None and self._client.is_connected:
+            try:
+                self._loop.run_until_complete(self._client.disconnect())
+            except Exception:
+                pass
+        self._hotkey_mgr.stop()
+        if self._loop is not None:
+            self._loop.close()
+            self._loop = None
+
     def run(self) -> None:
         api_key = self._settings.get("api_key", "")
         if not api_key:
             self._signals.error.emit("No API key configured")
             return
-
-        self._client = GeminiLiveClient(api_key=api_key)
-
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        loop = self._loop
-        loop.run_until_complete(self._client.connect())
-
+        try:
+            self._client = GeminiLiveClient(api_key=api_key)
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._client.connect())
+        except Exception:
+            self._signals.error.emit("Failed to connect to Gemini Live")
+            self._cleanup()
+            return
+        if not self._settings.get("fast_mode", True):
+            self._processor = TextProcessor(api_key=api_key)
         self._hotkey_mgr.register(
-            self._settings.get("hotkey", 0x7E), self._on_hotkey
+            self._settings.get("hotkey", DEFAULT_HOTKEY), self._on_hotkey
         )
         self._hotkey_mgr.start()
-
-        while self._client.is_connected:
-            loop.run_until_complete(
-                self._client.receive_transcript(
-                    on_partial=self._on_partial, on_final=self._on_final
+        try:
+            while self._client.is_connected and not self._should_stop:
+                self._loop.run_until_complete(
+                    self._client.receive_transcript(
+                        on_partial=self._on_partial, on_final=self._on_final
+                    )
                 )
-            )
-
-        loop.run_until_complete(self._client.disconnect())
-        self._hotkey_mgr.stop()
+        except Exception:
+            self._signals.error.emit("Speech engine connection lost")
+        finally:
+            self._cleanup()
 
 
 class VoiceTypeApp:
@@ -134,6 +162,7 @@ class VoiceTypeApp:
 
     def _start_recording(self) -> None:
         if self._worker is not None and self._worker.isRunning():
+            self._worker._start_recording()
             return
         self._worker = WorkerThread(self._settings)
         self._worker._signals.recording_started.connect(self._on_recording_started)
@@ -175,8 +204,8 @@ class VoiceTypeApp:
     def _exit(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker._finalize_and_inject()
-            self._worker.quit()
-            self._worker.wait(2000)
+            self._worker._should_stop = True
+            self._worker.wait(6000)
         self._status_bar.close()
         self._tray.hide()
         self._qapp.quit()

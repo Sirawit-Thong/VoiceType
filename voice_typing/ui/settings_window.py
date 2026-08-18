@@ -68,7 +68,7 @@ class SettingsWindow(QDialog):
     def _hotkey_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        self._hotkey_input = QLineEdit(hex(self._settings.get("hotkey", 0x7E)))
+        self._hotkey_input = QLineEdit(hex(self._settings.get("hotkey", 0x78)))
         layout.addRow("Push-to-Talk key:", self._hotkey_input)
         return w
 

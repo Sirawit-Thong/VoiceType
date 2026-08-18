@@ -9,7 +9,7 @@ from typing import Any
 DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
     "mode": "push_to_talk",
-    "hotkey": 0x7E,
+    "hotkey": 0x78,
     "language": "auto",
     "fast_mode": True,
     "microphone_device_id": None,
