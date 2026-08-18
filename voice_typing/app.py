@@ -131,7 +131,8 @@ class WorkerThread(QThread):
         self._signals.partial_received.emit(text)
 
     def _on_final(self, text: str) -> None:
-        self._buffer.add_partial(text)
+        if text:
+            self._buffer.add_partial(text)
         self._finalize_and_inject()
 
     def _cleanup(self) -> None:

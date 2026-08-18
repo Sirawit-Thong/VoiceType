@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -46,6 +46,7 @@ async def test_receive_dispatches_partial_and_final():
     final = MagicMock()
     ws.recv = AsyncMock(side_effect=[
         json.dumps({"serverContent": {"inputTranscription": {"text": "hello"}, "turnComplete": False}}),
+        json.dumps({"serverContent": {"modelTurn": {"parts": []}}}),
         json.dumps({"serverContent": {"inputTranscription": {"text": "hello world"}, "turnComplete": True}}),
     ])
     with patch("voice_typing.speech.gemini_live.websockets.connect", new=AsyncMock(return_value=ws)):
@@ -53,5 +54,6 @@ async def test_receive_dispatches_partial_and_final():
         await client.connect()
         await client.receive_transcript(on_partial=partial, on_final=final)
         await client.receive_transcript(on_partial=partial, on_final=final)
+        await client.receive_transcript(on_partial=partial, on_final=final)
     partial.assert_called_once_with("hello")
-    final.assert_called_once_with("hello world")
+    assert final.call_args_list == [call(""), call("hello world")]

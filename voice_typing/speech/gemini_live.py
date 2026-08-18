@@ -91,11 +91,12 @@ class GeminiLiveClient:
             if "serverContent" in data:
                 sc = data["serverContent"]
                 text = sc.get("inputTranscription", {}).get("text", "")
-                if text:
-                    if sc.get("turnComplete", False):
-                        on_final(text)
-                    else:
-                        on_partial(text)
+                if text and not sc.get("turnComplete", False):
+                    on_partial(text)
+                if sc.get("turnComplete", False):
+                    on_final(text)
+                elif "modelTurn" in sc:
+                    on_final("")
         except asyncio.TimeoutError:
             pass
         except Exception:
