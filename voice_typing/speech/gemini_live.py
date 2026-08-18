@@ -7,6 +7,7 @@ import json
 from typing import Callable
 
 import websockets
+from websockets.asyncio.client import ClientConnection
 
 LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 MODEL = "gemini-2.0-flash-live-001"
@@ -16,7 +17,7 @@ class GeminiLiveClient:
     def __init__(self, api_key: str, model: str = MODEL) -> None:
         self._api_key = api_key
         self._model = model
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: ClientConnection | None = None
         self._connected = False
 
     @property

@@ -99,7 +99,7 @@ class TrayIcon:
                 self._tray.setToolTip("VoiceType - Ready")
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.signals.start_recording.emit()
 
     def hide(self) -> None:

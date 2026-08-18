@@ -123,7 +123,7 @@ class TextInjector:
     def _send_char(self, char: str) -> bool:
         codes = _char_to_vk_sc(char)
         if codes is None:
-            return self._send_unicode_char(char)
+            return _send_unicode_char(char)
         for vk, sc, hold in codes:
             _send_key_down(vk)
             time.sleep(0.001)

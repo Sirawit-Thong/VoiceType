@@ -47,10 +47,10 @@ class WorkerThread(QThread):
         self._should_stop = False
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
-        if self._client is not None and self._client.is_connected:
-            asyncio.run_coroutine_threadsafe(
-                self._client.send_audio(audio_bytes), self._loop
-            )
+        client = self._client
+        loop = self._loop
+        if client is not None and client.is_connected and loop is not None:
+            asyncio.run_coroutine_threadsafe(client.send_audio(audio_bytes), loop)
 
     def _on_hotkey(self, vk_code: int) -> None:
         if self._recording:
@@ -118,14 +118,15 @@ class WorkerThread(QThread):
         self._finalize_and_inject()
 
     def _cleanup(self) -> None:
-        if self._client is not None and self._client.is_connected:
+        loop = self._loop
+        if loop is not None and self._client is not None and self._client.is_connected:
             try:
-                self._loop.run_until_complete(self._client.disconnect())
+                loop.run_until_complete(self._client.disconnect())
             except Exception:
                 pass
         self._hotkey_mgr.stop()
-        if self._loop is not None:
-            self._loop.close()
+        if loop is not None:
+            loop.close()
             self._loop = None
 
     def run(self) -> None:
