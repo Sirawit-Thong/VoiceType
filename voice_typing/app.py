@@ -303,9 +303,12 @@ class VoiceTypeApp:
     def _on_error(self, msg: str) -> None:
         self._status_bar.show()
         self._status_bar.set_state("error", msg)
+        self._tray.set_status("Error")
+        self._tray.set_status("Error")
 
     def _on_status(self, msg: str) -> None:
         self._status_bar.set_state("ready", msg)
+        self._tray.set_status("Connecting...")
 
     def _on_test_microphone(self) -> None:
         try:

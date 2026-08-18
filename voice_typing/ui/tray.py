@@ -22,6 +22,7 @@ class TrayIcon:
         self._menu: QMenu | None = None
         self._mode: str = "push_to_talk"
         self._recording: bool = False
+        self._status_text: str = "Ready"
 
     def _make_icon(self) -> QIcon:
         icon = QIcon.fromTheme("audio-input-microphone")
@@ -49,6 +50,10 @@ class TrayIcon:
         if self._menu is None:
             return
         self._menu.clear()
+        status_action = QAction(f"Status: {self._status_text}")
+        status_action.setEnabled(False)
+        self._menu.addAction(status_action)
+        self._menu.addSeparator()
         if self._recording:
             action = QAction("Stop Recording")
             action.triggered.connect(self.signals.stop_recording.emit)
@@ -93,14 +98,15 @@ class TrayIcon:
         self._mode = mode
         self._build_menu()
 
-    def update_recording_state(self, recording: bool) -> None:
-        self._recording = recording
+    def set_status(self, status: str) -> None:
+        self._status_text = status
         self._build_menu()
         if self._tray is not None:
-            if recording:
-                self._tray.setToolTip("VoiceType - Recording...")
-            else:
-                self._tray.setToolTip("VoiceType - Ready")
+            self._tray.setToolTip(f"VoiceType - {status}")
+
+    def update_recording_state(self, recording: bool) -> None:
+        self._recording = recording
+        self.set_status("Recording..." if recording else "Ready")
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
