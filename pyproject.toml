@@ -1,0 +1,21 @@
+[project]
+name = "voicetype"
+version = "0.1.0"
+description = "Low-latency voice-to-text typing for Windows"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.6.0",
+    "sounddevice>=0.4.6",
+    "websockets>=12.0",
+    "pyperclip>=1.8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
