@@ -64,10 +64,25 @@ class WorkerThread(QThread):
             pass
 
     def _on_hotkey(self, vk_code: int) -> None:
-        if self._recording:
+        mode = self._settings.get("mode", "push_to_talk")
+        if mode == "push_to_talk":
+            self._start_recording()
+        elif self._recording:
             self._finalize_and_inject()
         else:
             self._start_recording()
+
+    def _on_hotkey_release(self, vk_code: int) -> None:
+        self._finalize_and_inject()
+
+    def reconfigure_hotkey(self) -> None:
+        mode = self._settings.get("mode", "push_to_talk")
+        release_cb = self._on_hotkey_release if mode == "push_to_talk" else None
+        self._hotkey_mgr.register(
+            self._settings.get("hotkey", DEFAULT_HOTKEY),
+            self._on_hotkey,
+            on_release=release_cb,
+        )
 
     def _start_recording(self) -> None:
         with self._lock:
@@ -94,13 +109,15 @@ class WorkerThread(QThread):
             text = raw
         self._injector.inject(text)
 
-    def _finalize_and_inject(self) -> None:
+    def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:
             if not self._recording:
                 return
-            self._recorder.stop()
-            self._recording = False
-        self._signals.recording_stopped.emit()
+            if not keep_recording:
+                self._recorder.stop()
+                self._recording = False
+        if not keep_recording:
+            self._signals.recording_stopped.emit()
         text = self._buffer.finalize()
         if not text.strip():
             return
@@ -133,7 +150,11 @@ class WorkerThread(QThread):
     def _on_final(self, text: str) -> None:
         if text:
             self._buffer.add_partial(text)
-        self._finalize_and_inject()
+        self._finalize_and_inject(
+            keep_recording=(
+                self._settings.get("mode", "push_to_talk") == "push_to_talk"
+            )
+        )
 
     def _cleanup(self) -> None:
         loop = self._loop
@@ -152,9 +173,7 @@ class WorkerThread(QThread):
         if not api_key:
             self._signals.error.emit("No API key configured")
             return
-        self._hotkey_mgr.register(
-            self._settings.get("hotkey", DEFAULT_HOTKEY), self._on_hotkey
-        )
+        self.reconfigure_hotkey()
         self._hotkey_mgr.start()
         last_error = ""
         try:
@@ -296,6 +315,8 @@ class VoiceTypeApp:
     def _on_mode_changed(self, mode: str) -> None:
         self._settings.set("mode", mode)
         self._settings.save()
+        if self._worker is not None:
+            self._worker.reconfigure_hotkey()
 
     def _open_settings(self) -> None:
         if self._settings_win is None:

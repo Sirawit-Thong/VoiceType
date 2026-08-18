@@ -58,13 +58,13 @@ class TrayIcon:
         self._menu.addAction(action)
 
         mode_menu = self._menu.addMenu("Mode")
-        ptt_action = QAction("Push-to-Talk")
+        ptt_action = QAction("Push-to-Talk (hold to record)")
         ptt_action.setCheckable(True)
         ptt_action.setChecked(self._mode == "push_to_talk")
         ptt_action.triggered.connect(lambda: self._set_mode("push_to_talk"))
         mode_menu.addAction(ptt_action)
 
-        toggle_action = QAction("Toggle")
+        toggle_action = QAction("Toggle (press to start/stop)")
         toggle_action.setCheckable(True)
         toggle_action.setChecked(self._mode == "toggle")
         toggle_action.triggered.connect(lambda: self._set_mode("toggle"))

@@ -104,7 +104,9 @@ class SettingsWindow(QDialog):
         layout.addRow("Push-to-Talk key:", self._hotkey_combo)
         hint = QLabel(
             f"Currently using: {hotkey_name(current)} — "
-            "press this key once to start recording, once to finalize and type."
+            "Push-to-Talk: hold the key to record, release to type. "
+            "Toggle: press once to start, press again to stop. "
+            "Switch modes from the tray icon menu (Mode)."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9aa0a6;")

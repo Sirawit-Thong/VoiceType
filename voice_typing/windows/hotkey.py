@@ -5,6 +5,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import logging
 import threading
+import time
 from typing import Callable
 
 user32 = ctypes.windll.user32
@@ -41,6 +42,7 @@ def hotkey_name(vk_code: int) -> str:
 class HotkeyManager:
     def __init__(self) -> None:
         self._hotkeys: dict[int, Callable[[int], None]] = {}
+        self._release_callbacks: dict[int, Callable[[int], None]] = {}
         self._registration_failures: list[int] = []
         self._thread: threading.Thread | None = None
         self._running = False
@@ -51,11 +53,21 @@ class HotkeyManager:
     def is_running(self) -> bool:
         return self._running
 
-    def register(self, vk_code: int, callback: Callable[[int], None]) -> None:
+    def register(
+        self,
+        vk_code: int,
+        callback: Callable[[int], None],
+        on_release: Callable[[int], None] | None = None,
+    ) -> None:
         self._hotkeys[vk_code] = callback
+        if on_release is not None:
+            self._release_callbacks[vk_code] = on_release
+        else:
+            self._release_callbacks.pop(vk_code, None)
 
     def unregister(self, vk_code: int) -> None:
         self._hotkeys.pop(vk_code, None)
+        self._release_callbacks.pop(vk_code, None)
         if self._running and self._started.wait(timeout=1.0):
             user32.PostThreadMessageW(self._thread_id, WM_UNREGISTER, vk_code, 0)
 
@@ -81,10 +93,30 @@ class HotkeyManager:
                         logging.warning(
                             "Hotkey callback failed VK=0x%X", vk, exc_info=True
                         )
+                    release_cb = self._release_callbacks.get(vk)
+                    if release_cb is not None:
+                        threading.Thread(
+                            target=self._wait_for_release,
+                            args=(vk, release_cb),
+                            daemon=True,
+                        ).start()
             elif msg.message == WM_UNREGISTER:
                 user32.UnregisterHotKey(None, msg.wParam & 0xFFFFFFFF)
         for vk in self._hotkeys:
             user32.UnregisterHotKey(None, vk)
+
+    def _wait_for_release(self, vk: int, on_release: Callable[[int], None]) -> None:
+        deadline = time.monotonic() + 600.0
+        while self._running and time.monotonic() < deadline:
+            if not (user32.GetAsyncKeyState(vk) & 0x8000):
+                break
+            time.sleep(0.03)
+        try:
+            on_release(vk)
+        except Exception:
+            logging.warning(
+                "Hotkey release callback failed VK=0x%X", vk, exc_info=True
+            )
 
     def start(self) -> None:
         if self._running:
