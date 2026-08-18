@@ -1,6 +1,8 @@
 # voice_typing/ai/text_processor.py
 from __future__ import annotations
 
+import logging
+
 import aiohttp
 
 
@@ -33,5 +35,7 @@ class TextProcessor:
                             parts = candidates[0].get("content", {}).get("parts", [])
                             return "".join(p.get("text", "") for p in parts).strip()
         except Exception:
-            pass
+            logging.warning(
+                "TextProcessor failed; returning raw text", exc_info=True
+            )
         return text

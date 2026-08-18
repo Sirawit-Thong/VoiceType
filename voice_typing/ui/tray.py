@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 
@@ -23,9 +23,21 @@ class TrayIcon:
         self._mode: str = "push_to_talk"
         self._recording: bool = False
 
+    def _make_icon(self) -> QIcon:
+        icon = QIcon.fromTheme("audio-input-microphone")
+        if not icon.isNull():
+            return icon
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(QColor("transparent"))
+        painter = QPainter(pixmap)
+        painter.setBrush(QColor("#1a73e8"))
+        painter.drawEllipse(2, 2, 28, 28)
+        painter.end()
+        return QIcon(pixmap)
+
     def show(self) -> None:
         self._tray = QSystemTrayIcon()
-        self._tray.setIcon(QIcon.fromTheme("audio-input-microphone"))
+        self._tray.setIcon(self._make_icon())
         self._tray.setToolTip("VoiceType - Ready")
         self._menu = QMenu()
         self._build_menu()

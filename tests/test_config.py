@@ -33,3 +33,11 @@ def test_settings_get_default(tmp_path):
     mgr = SettingsManager(config_path)
     mgr.load()
     assert mgr.get("nonexistent_key", "fallback") == "fallback"
+
+
+def test_settings_load_corrupted_falls_back(tmp_path):
+    config_path = tmp_path / "settings.json"
+    config_path.write_text("{not valid json", encoding="utf-8")
+    mgr = SettingsManager(config_path)
+    mgr.load()
+    assert mgr.get("mode") == "push_to_talk"

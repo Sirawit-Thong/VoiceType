@@ -27,8 +27,12 @@ class SettingsManager:
 
     def load(self) -> None:
         if self._path.exists():
-            raw = self._path.read_text(encoding="utf-8")
-            self._data = json.loads(raw)
+            try:
+                raw = self._path.read_text(encoding="utf-8")
+                loaded = json.loads(raw)
+                self._data = {**DEFAULT_SETTINGS, **loaded}
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                self._data = dict(DEFAULT_SETTINGS)
         else:
             self._data = dict(DEFAULT_SETTINGS)
             self.save()
