@@ -108,7 +108,10 @@ class WorkerThread(QThread):
                 )
                 return
             try:
-                self._recorder.start(callback=self._on_audio_chunk)
+                self._recorder.start(
+                    callback=self._on_audio_chunk,
+                    device_id=self._settings.get("microphone_device_id"),
+                )
             except Exception:
                 self._signals.error.emit("Failed to start microphone")
                 return
@@ -214,7 +217,11 @@ class WorkerThread(QThread):
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
                 try:
-                    self._loop.run_until_complete(self._client.connect())
+                    self._loop.run_until_complete(
+                        self._client.connect(
+                            language=self._settings.get("language", "auto")
+                        )
+                    )
                     break
                 except Exception as exc:
                     last_error = str(exc)
@@ -284,7 +291,9 @@ class WorkerThread(QThread):
                 )
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(client.connect())
+                loop.run_until_complete(
+                    client.connect(language=self._settings.get("language", "auto"))
+                )
             except Exception as exc:
                 last_error = str(exc)
                 try:
@@ -391,7 +400,10 @@ class VoiceTypeApp:
     def _on_test_microphone(self) -> None:
         try:
             rec = AudioRecorder()
-            rec.start(callback=lambda b: None)
+            rec.start(
+                callback=lambda b: None,
+                device_id=self._settings.get("microphone_device_id"),
+            )
             QThread.msleep(300)
             rec.stop()
             QMessageBox.information(

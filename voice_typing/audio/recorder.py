@@ -14,6 +14,14 @@ CHUNK_DURATION_MS = 100
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 
 
+def list_input_devices() -> list[tuple[int, str]]:
+    return [
+        (i, d["name"])
+        for i, d in enumerate(sd.query_devices())
+        if d["max_input_channels"] > 0
+    ]
+
+
 class AudioRecorder:
     def __init__(self) -> None:
         self._stream: sd.InputStream | None = None
@@ -29,7 +37,9 @@ class AudioRecorder:
             pcm_bytes = indata.tobytes()
             self._callback(pcm_bytes)
 
-    def start(self, callback: Callable[[bytes], None]) -> None:
+    def start(
+        self, callback: Callable[[bytes], None], device_id: int | None = None
+    ) -> None:
         if self._is_recording:
             return
         self._callback = callback
@@ -38,6 +48,7 @@ class AudioRecorder:
             channels=CHANNELS,
             dtype=DTYPE,
             blocksize=CHUNK_SIZE,
+            device=device_id,
             callback=self._audio_callback,
         )
         self._stream.start()

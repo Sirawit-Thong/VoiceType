@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMessageBox,
     QPushButton,
     QTabWidget,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from voice_typing.audio.recorder import list_input_devices
 from voice_typing.config.settings import SettingsManager
 from voice_typing.speech.gemini_live import MODEL, fetch_live_models
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
@@ -131,8 +131,21 @@ class SettingsWindow(QDialog):
         self._lang_combo.setCurrentIndex(idx)
         layout.addRow("Language:", self._lang_combo)
 
-        self._mic_list = QListWidget()
-        layout.addRow("Microphone:", self._mic_list)
+        self._mic_combo = QComboBox()
+        self._mic_combo.addItem("Default", None)
+        try:
+            for index, name in list_input_devices():
+                self._mic_combo.addItem(name, index)
+        except Exception:
+            pass
+        current = self._settings.get("microphone_device_id")
+        selected = 0
+        for i in range(self._mic_combo.count()):
+            if self._mic_combo.itemData(i) == current:
+                selected = i
+                break
+        self._mic_combo.setCurrentIndex(selected)
+        layout.addRow("Microphone:", self._mic_combo)
         return w
 
     def _gemini_tab(self) -> QWidget:
@@ -167,6 +180,7 @@ class SettingsWindow(QDialog):
         self._settings.set("sound_feedback", self._sound_feedback.isChecked())
         lang_map = {0: "auto", 1: "thai", 2: "english"}
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
+        self._settings.set("microphone_device_id", self._mic_combo.currentData())
         self._settings.set("api_key", self._api_key.text())
         self._settings.set("model", str(self._model_combo.currentData()))
         self._settings.set("fast_mode", self._fast_mode.isChecked())

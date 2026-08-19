@@ -16,6 +16,12 @@ LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativel
 REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL = "models/gemini-3.1-flash-live-preview"
 
+LANGUAGE_INSTRUCTIONS = {
+    "auto": "Support both Thai and English.",
+    "thai": "Transcribe the user's speech into Thai text.",
+    "english": "Transcribe the user's speech into English text.",
+}
+
 
 def fetch_live_models(api_key: str) -> list[str]:
     url = f"{REST_MODELS_URL}?key={quote(api_key)}&pageSize=1000"
@@ -47,7 +53,7 @@ class GeminiLiveClient:
     def is_connected(self) -> bool:
         return self._connected
 
-    async def connect(self) -> None:
+    async def connect(self, language: str = "auto") -> None:
         url = f"{LIVE_API_URL}?key={self._api_key}"
         self._ws = await websockets.connect(url)
         model_name = (
@@ -55,15 +61,19 @@ class GeminiLiveClient:
             if self._model.startswith("models/")
             else f"models/{self._model}"
         )
+        lang_hint = LANGUAGE_INSTRUCTIONS.get(
+            language, LANGUAGE_INSTRUCTIONS["auto"]
+        )
+        instruction = (
+            "You are a speech-to-text transcription service. "
+            "Transcribe exactly what the user says. "
+            f"{lang_hint} Output only the transcription, nothing else."
+        )
         setup_msg = {
             "setup": {
                 "model": model_name,
                 "generationConfig": {"responseModalities": ["AUDIO"]},
-                "systemInstruction": {
-                    "parts": [
-                        {"text": "You are a speech-to-text transcription service. Transcribe exactly what the user says. Support both Thai and English. Output only the transcription, nothing else."}
-                    ]
-                },
+                "systemInstruction": {"parts": [{"text": instruction}]},
             }
         }
         await self._ws.send(json.dumps(setup_msg))
