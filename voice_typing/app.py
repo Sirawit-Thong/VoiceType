@@ -60,6 +60,8 @@ class WorkerThread(QThread):
         self._recording = False
         self._should_stop = False
         self._last_injected = ""
+        self._last_injected_raw = ""
+        self._last_inject_time = 0.0
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         client = self._client
@@ -144,6 +146,14 @@ class WorkerThread(QThread):
         text = self._buffer.finalize()
         if not text.strip():
             return
+        now = time.monotonic()
+        if (
+            self._last_injected_raw == text.strip()
+            and now - self._last_inject_time < 3.0
+        ):
+            return
+        self._last_injected_raw = text.strip()
+        self._last_inject_time = now
         if self._processor is None or self._loop is None:
             self._inject(text)
             return

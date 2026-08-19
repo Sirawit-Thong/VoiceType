@@ -63,3 +63,42 @@ def test_connection_lost_no_double_stop():
         worker._stop_recording_on_connection_lost()
         worker._recorder.stop.assert_not_called()
         worker._injector.inject.assert_not_called()
+
+
+def test_no_duplicate_injection_on_repeated_end_of_turn():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+        worker._on_partial("sawasdee")
+        worker._on_final("")
+        worker._on_partial("sawasdee")
+        worker._on_final("")
+        worker._injector.inject.assert_called_once_with("sawasdee")
+
+
+def test_same_text_after_interval_is_injected_again():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+        worker._on_partial("hello")
+        worker._on_final("")
+        worker._last_inject_time -= 10
+        worker._on_partial("hello")
+        worker._on_final("")
+        assert worker._injector.inject.call_count == 2
