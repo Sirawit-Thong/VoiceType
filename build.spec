@@ -7,6 +7,8 @@ a = Analysis(
     hiddenimports=[
         "sounddevice",
         "numpy",
+        "websockets",
+        "pyperclip",
         "PySide6.QtWidgets",
         "PySide6.QtCore",
         "PySide6.QtGui",
