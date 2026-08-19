@@ -1,8 +1,15 @@
 # voice_typing/ui/tray.py
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QIcon,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 
@@ -31,8 +38,18 @@ class TrayIcon:
         pixmap = QPixmap(32, 32)
         pixmap.fill(QColor("transparent"))
         painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#1a73e8"))
         painter.drawEllipse(2, 2, 28, 28)
+        painter.setPen(QPen(QColor("white"), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(12, 13, 8, 8, 0, -180 * 16)
+        painter.drawLine(16, 21, 16, 24)
+        painter.drawLine(12, 24, 20, 24)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("white"))
+        painter.drawRoundedRect(13, 6, 6, 10, 2, 2)
         painter.end()
         return QIcon(pixmap)
 

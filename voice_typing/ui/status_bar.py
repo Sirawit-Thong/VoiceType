@@ -6,6 +6,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -55,12 +56,23 @@ class StatusBar:
     def _build_window(self) -> _ControlWindow:
         win = _ControlWindow(self.hide)
         win.setWindowTitle("VoiceType")
-        win.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
-        win.resize(380, 160)
-        win.setStyleSheet("QWidget { background-color: #202124; color: #e8eaed; }")
+        win.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
+        )
+        win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        win.resize(400, 175)
+
+        frame = QFrame(win)
+        frame.setObjectName("card")
+        frame.setStyleSheet(
+            "#card { background-color: rgba(32, 33, 36, 0.95); border-radius: 14px; "
+            "border: 1px solid rgba(255, 255, 255, 0.10); }"
+        )
 
         self._status_label = QLabel("🟢 Ready")
-        self._status_label.setStyleSheet("font-size: 15px; font-weight: bold;")
+        self._status_label.setStyleSheet(
+            "font-size: 15px; font-weight: bold; color: #e8eaed;"
+        )
 
         self._transcript_label = QLabel("")
         self._transcript_label.setWordWrap(True)
@@ -71,20 +83,36 @@ class StatusBar:
 
         self._toggle_button = QPushButton("Start Recording")
         self._toggle_button.clicked.connect(self._on_toggle)
+        self._toggle_button.setStyleSheet(
+            "QPushButton { background-color: #1a73e8; color: #ffffff; border: none; "
+            "border-radius: 8px; padding: 6px 12px; font-size: 13px; }"
+            "QPushButton:hover { background-color: #2b84f5; }"
+        )
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self.signals.open_settings.emit)
+        settings_button.setStyleSheet(
+            "QPushButton { background-color: #303134; color: #e8eaed; border: none; "
+            "border-radius: 8px; padding: 6px 12px; font-size: 13px; }"
+            "QPushButton:hover { background-color: #3c4043; }"
+        )
         exit_button = QPushButton("Exit")
         exit_button.clicked.connect(self.signals.exit_app.emit)
+        exit_button.setStyleSheet(settings_button.styleSheet())
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._toggle_button)
         buttons.addWidget(settings_button)
         buttons.addWidget(exit_button)
 
-        layout = QVBoxLayout(win)
-        layout.addWidget(self._status_label)
-        layout.addWidget(self._transcript_label, 1)
-        layout.addLayout(buttons)
+        card_layout = QVBoxLayout(frame)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.addWidget(self._status_label)
+        card_layout.addWidget(self._transcript_label, 1)
+        card_layout.addLayout(buttons)
+
+        root = QVBoxLayout(win)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.addWidget(frame)
         self._update_hint()
         return win
 
