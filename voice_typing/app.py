@@ -238,13 +238,14 @@ class WorkerThread(QThread):
                     f"{last_error[:300] or 'unknown error'} - check your API key and internet"
                 )
                 return
-            if self._loop is None:
-                return
             if not self._settings.get("fast_mode", True):
                 self._processor = TextProcessor(api_key=api_key)
             while not self._should_stop:
+                loop = self._loop
+                if loop is None:
+                    return
                 try:
-                    self._loop.run_until_complete(
+                    loop.run_until_complete(
                         self._client.receive_transcript(
                             on_partial=self._on_partial, on_final=self._on_final
                         )
@@ -259,8 +260,8 @@ class WorkerThread(QThread):
                 if self._client.is_connected:
                     continue
                 self._stop_recording_on_connection_lost()
-                if self._loop is not None:
-                    self._loop.close()
+                if loop is not None:
+                    loop.close()
                     self._loop = None
                 if not self._reconnect():
                     self._signals.error.emit(
@@ -298,6 +299,7 @@ class WorkerThread(QThread):
             time.sleep(delay)
             if self._should_stop:
                 return False
+            loop = None
             try:
                 client = GeminiLiveClient(
                     api_key=api_key,
@@ -310,10 +312,8 @@ class WorkerThread(QThread):
                 )
             except Exception as exc:
                 last_error = str(exc)
-                try:
+                if loop is not None:
                     loop.close()
-                except Exception:
-                    pass
                 self._signals.status.emit(
                     f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
                 )
