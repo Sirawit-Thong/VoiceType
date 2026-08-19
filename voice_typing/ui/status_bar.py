@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -19,6 +21,7 @@ class StatusBarSignals(QObject):
     start_recording = Signal()
     stop_recording = Signal()
     open_settings = Signal()
+    test_microphone = Signal()
     exit_app = Signal()
 
 
@@ -37,9 +40,10 @@ class StatusBar:
     def __init__(self) -> None:
         self.signals = StatusBarSignals()
         self._window: _ControlWindow | None = None
+        self._state_dot: QLabel | None = None
+        self._mic_button: QPushButton | None = None
         self._status_label: QLabel | None = None
-        self._transcript_label: QLabel | None = None
-        self._toggle_button: QPushButton | None = None
+        self._menu_button: QPushButton | None = None
         self._recording = False
         self._hotkey_name = "F9"
 
@@ -48,10 +52,24 @@ class StatusBar:
         self._update_hint()
 
     def _update_hint(self) -> None:
-        if self._transcript_label is not None and not self._recording:
-            self._transcript_label.setText(
-                f"Press {self._hotkey_name} or click Start to record."
-            )
+        if self._status_label is not None and not self._recording:
+            self._status_label.setText(f"Press {self._hotkey_name} to record")
+
+    def _make_mic_pixmap(self, color: str) -> QPixmap:
+        pixmap = QPixmap(22, 22)
+        pixmap.fill(QColor("transparent"))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(color), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(7, 8, 8, 8, 0, -180 * 16)
+        painter.drawLine(11, 16, 11, 19)
+        painter.drawLine(8, 19, 14, 19)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawRoundedRect(9, 3, 4, 8, 2, 2)
+        painter.end()
+        return pixmap
 
     def _build_window(self) -> _ControlWindow:
         win = _ControlWindow(self.hide)
@@ -60,61 +78,85 @@ class StatusBar:
             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
         )
         win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        win.resize(400, 175)
+        win.resize(250, 50)
 
-        frame = QFrame(win)
-        frame.setObjectName("card")
-        frame.setStyleSheet(
-            "#card { background-color: rgba(32, 33, 36, 0.95); border-radius: 14px; "
-            "border: 1px solid rgba(255, 255, 255, 0.10); }"
+        capsule = QFrame(win)
+        capsule.setObjectName("capsule")
+        capsule.setStyleSheet(
+            "#capsule { background-color: rgba(32, 33, 36, 0.95); "
+            "border-radius: 22px; border: 1px solid rgba(255, 255, 255, 0.12); }"
         )
 
-        self._status_label = QLabel("🟢 Ready")
-        self._status_label.setStyleSheet(
-            "font-size: 15px; font-weight: bold; color: #e8eaed;"
-        )
+        self._state_dot = QLabel("●")
+        self._state_dot.setStyleSheet("color: #34a853; font-size: 14px;")
 
-        self._transcript_label = QLabel("")
-        self._transcript_label.setWordWrap(True)
-        self._transcript_label.setAlignment(
-            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        self._mic_button = QPushButton()
+        self._mic_button.setIcon(QIcon(self._make_mic_pixmap("#e8eaed")))
+        self._mic_button.setIconSize(QSize(22, 22))
+        self._mic_button.setFixedSize(28, 28)
+        self._mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mic_button.setToolTip("Start / Stop recording")
+        self._mic_button.setStyleSheet(
+            "QPushButton { background: transparent; border: none; border-radius: 14px; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); }"
         )
-        self._transcript_label.setStyleSheet("color: #bdc1c6; font-size: 13px;")
+        self._mic_button.clicked.connect(self._on_toggle)
 
-        self._toggle_button = QPushButton("Start Recording")
-        self._toggle_button.clicked.connect(self._on_toggle)
-        self._toggle_button.setStyleSheet(
-            "QPushButton { background-color: #1a73e8; color: #ffffff; border: none; "
-            "border-radius: 8px; padding: 6px 12px; font-size: 13px; }"
-            "QPushButton:hover { background-color: #2b84f5; }"
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px;")
+
+        self._menu_button = QPushButton("⋯")
+        self._menu_button.setFixedSize(28, 28)
+        self._menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._menu_button.setToolTip("Menu")
+        self._menu_button.setStyleSheet(
+            "QPushButton { background: transparent; color: #bdc1c6; border: none; "
+            "border-radius: 14px; font-size: 18px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); "
+            "color: #e8eaed; }"
         )
-        settings_button = QPushButton("Settings")
-        settings_button.clicked.connect(self.signals.open_settings.emit)
-        settings_button.setStyleSheet(
-            "QPushButton { background-color: #303134; color: #e8eaed; border: none; "
-            "border-radius: 8px; padding: 6px 12px; font-size: 13px; }"
-            "QPushButton:hover { background-color: #3c4043; }"
-        )
-        exit_button = QPushButton("Exit")
-        exit_button.clicked.connect(self.signals.exit_app.emit)
-        exit_button.setStyleSheet(settings_button.styleSheet())
+        self._menu_button.clicked.connect(self._show_menu)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self._toggle_button)
-        buttons.addWidget(settings_button)
-        buttons.addWidget(exit_button)
-
-        card_layout = QVBoxLayout(frame)
-        card_layout.setContentsMargins(16, 12, 16, 12)
-        card_layout.addWidget(self._status_label)
-        card_layout.addWidget(self._transcript_label, 1)
-        card_layout.addLayout(buttons)
+        row = QHBoxLayout(capsule)
+        row.setContentsMargins(14, 0, 6, 0)
+        row.setSpacing(8)
+        row.addWidget(self._state_dot)
+        row.addWidget(self._mic_button)
+        row.addWidget(self._status_label)
+        row.addStretch(1)
+        row.addWidget(self._menu_button)
 
         root = QVBoxLayout(win)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.addWidget(frame)
+        root.setContentsMargins(6, 6, 6, 6)
+        root.addWidget(capsule)
         self._update_hint()
         return win
+
+    def _show_menu(self) -> None:
+        if self._menu_button is None:
+            return
+        menu = QMenu()
+        menu.setStyleSheet(
+            "QMenu { background-color: #202124; color: #e8eaed; "
+            "border: 1px solid #3c4043; border-radius: 8px; padding: 6px; }"
+            "QMenu::item { padding: 6px 18px; border-radius: 6px; }"
+            "QMenu::item:selected { background-color: #303134; }"
+            "QMenu::separator { height: 1px; background-color: #3c4043; "
+            "margin: 4px 8px; }"
+        )
+        settings_action = QAction("Settings")
+        settings_action.triggered.connect(self.signals.open_settings.emit)
+        menu.addAction(settings_action)
+        test_action = QAction("Test Microphone")
+        test_action.triggered.connect(self.signals.test_microphone.emit)
+        menu.addAction(test_action)
+        menu.addSeparator()
+        exit_action = QAction("Exit")
+        exit_action.triggered.connect(self.signals.exit_app.emit)
+        menu.addAction(exit_action)
+        menu.exec(
+            self._menu_button.mapToGlobal(QPoint(0, self._menu_button.height()))
+        )
 
     def _on_toggle(self) -> None:
         if self._recording:
@@ -137,32 +179,45 @@ class StatusBar:
             return
         geo = screen.availableGeometry()
         x = (geo.width() - self._window.width()) // 2 + geo.x()
-        y = geo.height() - self._window.height() - 40 + geo.y()
+        y = geo.height() - self._window.height() - 30 + geo.y()
         self._window.move(x, y)
 
     def update_recording_state(self, recording: bool) -> None:
         self._recording = recording
-        if self._toggle_button is not None:
-            self._toggle_button.setText(
-                "Stop Recording" if recording else "Start Recording"
+        if self._mic_button is not None:
+            self._mic_button.setToolTip(
+                "Stop recording" if recording else "Start / Stop recording"
             )
-        if not recording:
-            self._update_hint()
 
     def set_state(self, state: str, text: str = "") -> None:
-        icons = {"ready": "🟢", "listening": "🔴", "processing": "⚡", "error": "⚪"}
-        icon = icons.get(state, "⚪")
+        colors = {
+            "ready": "#34a853",
+            "listening": "#ea4335",
+            "processing": "#fbbc04",
+            "error": "#9aa0a6",
+        }
         titles = {
             "ready": "Ready",
-            "listening": "Listening",
-            "processing": "Processing",
+            "listening": "Listening...",
+            "processing": "Processing...",
             "error": "Error",
         }
+        color = colors.get(state, "#9aa0a6")
         title = titles.get(state, state.title())
+        if self._state_dot is not None:
+            self._state_dot.setStyleSheet(f"color: {color}; font-size: 14px;")
+        if self._mic_button is not None:
+            self._mic_button.setIcon(QIcon(self._make_mic_pixmap(color)))
         if self._status_label is not None:
-            self._status_label.setText(f"{icon} {title}")
-        if text and self._transcript_label is not None:
-            self._transcript_label.setText(text)
+            if state == "ready" and not text:
+                self._update_hint()
+            elif text:
+                shown = text if len(text) <= 20 else text[:17] + "..."
+                self._status_label.setText(shown)
+            else:
+                self._status_label.setText(title)
+        if self._window is not None:
+            self._window.setToolTip(text if text else title)
 
     def hide(self) -> None:
         if self._window is not None:
@@ -172,6 +227,7 @@ class StatusBar:
         if self._window is not None:
             self._window.hide()
             self._window = None
+            self._state_dot = None
+            self._mic_button = None
             self._status_label = None
-            self._transcript_label = None
-            self._toggle_button = None
+            self._menu_button = None
