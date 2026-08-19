@@ -343,7 +343,14 @@ class VoiceTypeApp:
         self._settings = SettingsManager(config_dir / "settings.json")
         self._settings.load()
         self._tray = TrayIcon()
-        self._status_bar = StatusBar()
+        self._status_bar = StatusBar(
+            on_position_changed=self._on_status_bar_moved,
+            saved_position=(
+                (self._settings.get("status_bar_x"), self._settings.get("status_bar_y"))
+                if self._settings.get("status_bar_x") is not None
+                else None
+            ),
+        )
         self._settings_win: SettingsWindow | None = None
         self._worker: WorkerThread | None = None
 
@@ -377,6 +384,11 @@ class VoiceTypeApp:
         if worker is None:
             return
         worker._start_recording()
+
+    def _on_status_bar_moved(self, x: int, y: int) -> None:
+        self._settings.set("status_bar_x", x)
+        self._settings.set("status_bar_y", y)
+        self._settings.save()
 
     def _spawn_worker(self) -> None:
         if self._worker is not None:

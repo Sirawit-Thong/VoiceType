@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -36,8 +36,51 @@ class _ControlWindow(QWidget):
         self.hide()
 
 
+class _DraggableCapsule(QFrame):
+    drag_finished = Signal(int, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._drag_offset: QPoint | None = None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = (
+                event.globalPosition().toPoint()
+                - self.window().frameGeometry().topLeft()
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._drag_offset is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            self.window().move(
+                event.globalPosition().toPoint() - self._drag_offset
+            )
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_offset is not None:
+            self._drag_offset = None
+            win = self.window()
+            self.drag_finished.emit(win.x(), win.y())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class StatusBar:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        on_position_changed: Callable[[int, int], None] | None = None,
+        saved_position: tuple[int, int] | None = None,
+    ) -> None:
         self.signals = StatusBarSignals()
         self._window: _ControlWindow | None = None
         self._state_dot: QLabel | None = None
@@ -46,6 +89,8 @@ class StatusBar:
         self._menu_button: QPushButton | None = None
         self._recording = False
         self._hotkey_name = "F9"
+        self._on_position_changed = on_position_changed
+        self._saved_position = saved_position
 
     def set_hotkey_name(self, name: str) -> None:
         self._hotkey_name = name
@@ -80,12 +125,14 @@ class StatusBar:
         win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         win.setFixedSize(262, 50)
 
-        capsule = QFrame(win)
+        capsule = _DraggableCapsule(win)
         capsule.setObjectName("capsule")
+        capsule.setCursor(Qt.CursorShape.OpenHandCursor)
         capsule.setStyleSheet(
             "#capsule { background-color: rgba(32, 33, 36, 0.95); "
             "border-radius: 22px; border: 1px solid rgba(255, 255, 255, 0.12); }"
         )
+        capsule.drag_finished.connect(self._on_drag_finished)
 
         self._state_dot = QLabel("●")
         self._state_dot.setStyleSheet("color: #34a853; font-size: 14px;")
@@ -165,10 +212,17 @@ class StatusBar:
         else:
             self.signals.start_recording.emit()
 
+    def _on_drag_finished(self, x: int, y: int) -> None:
+        if self._on_position_changed is not None:
+            self._on_position_changed(x, y)
+
     def show(self) -> None:
         if self._window is None:
             self._window = self._build_window()
-            self._move_bottom_center()
+            if self._saved_position is not None:
+                self._window.move(*self._saved_position)
+            else:
+                self._move_bottom_center()
         self._window.show()
         self._window.raise_()
 
