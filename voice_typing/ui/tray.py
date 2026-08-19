@@ -22,6 +22,7 @@ class TraySignals(QObject):
     exit_app = Signal()
     mode_changed = Signal(str)
     re_inject = Signal(str)
+    show_status_bar = Signal()
 
 
 class TrayIcon:
@@ -164,8 +165,9 @@ class TrayIcon:
         if reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick,
-            QSystemTrayIcon.ActivationReason.Context,
         ):
+            self.signals.show_status_bar.emit()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
             if self._menu is not None:
                 self._build_menu()
                 self._menu.popup(QCursor.pos())

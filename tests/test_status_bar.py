@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -76,3 +77,27 @@ def test_pulse_runs_only_while_listening(bar):
     bar.update_recording_state(False)
     assert bar._pulse_anim is None
     assert bar._pulse_effect.opacity() == 1.0
+
+
+def test_collapse_button_hides_window(bar):
+    collapse = bar._collapse_button
+    assert collapse is not None
+    assert bar._window is not None
+    QTest.mouseClick(collapse, Qt.MouseButton.LeftButton)
+    tries = 30
+    while bar._window is not None and tries > 0:
+        QTest.qWait(10)
+        tries -= 1
+    assert bar._window is None  # collapsed (faded out and released)
+
+
+def test_show_after_collapse_rebuilds(bar):
+    QTest.mouseClick(bar._collapse_button, Qt.MouseButton.LeftButton)
+    tries = 30
+    while bar._window is not None and tries > 0:
+        QTest.qWait(10)
+        tries -= 1
+    assert bar._window is None
+    bar.show()
+    assert bar._window is not None
+    assert bar._window.isVisible()

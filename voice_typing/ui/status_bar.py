@@ -156,6 +156,7 @@ class StatusBar:
         self._state_dot: QLabel | None = None
         self._mic_button: QPushButton | None = None
         self._status_label: QLabel | None = None
+        self._collapse_button: QPushButton | None = None
         self._menu_button: QPushButton | None = None
         self._meter: _LevelMeter | None = None
         self._recording = False
@@ -238,6 +239,20 @@ class StatusBar:
         self._status_label.setMaximumWidth(130)
         self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px;")
 
+        self._collapse_button = QPushButton("▾")
+        self._collapse_button.setFixedSize(28, 28)
+        self._collapse_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._collapse_button.setToolTip(
+            "Collapse (click the tray icon to bring it back)"
+        )
+        self._collapse_button.setStyleSheet(
+            "QPushButton { background: transparent; color: #bdc1c6; border: none; "
+            "border-radius: 14px; font-size: 16px; font-weight: bold; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); "
+            "color: #e8eaed; }"
+        )
+        self._collapse_button.clicked.connect(self.close)
+
         self._menu_button = QPushButton("⋯")
         self._menu_button.setFixedSize(28, 28)
         self._menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -258,6 +273,7 @@ class StatusBar:
         row.addWidget(self._meter)
         row.addWidget(self._status_label)
         row.addStretch(1)
+        row.addWidget(self._collapse_button)
         row.addWidget(self._menu_button)
 
         root = QVBoxLayout(win)
@@ -360,6 +376,7 @@ class StatusBar:
             self._pulse_effect = None
             self._mic_button = None
             self._status_label = None
+            self._collapse_button = None
             self._menu_button = None
             self._meter = None
 

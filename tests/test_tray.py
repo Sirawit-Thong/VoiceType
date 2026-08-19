@@ -4,7 +4,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from voice_typing.ui.tray import TrayIcon
 
@@ -84,3 +84,12 @@ def test_rebuild_on_second_set_history(qapp):
     assert texts == ["z", "y", "x"]
     assert "a" not in texts
     assert "b" not in texts
+
+
+def test_left_click_emits_show_status_bar(qapp):
+    tray = _shown_tray(qapp)
+    received = []
+    tray.signals.show_status_bar.connect(lambda: received.append(True))
+    tray._on_activated(QSystemTrayIcon.ActivationReason.Trigger)
+    tray._on_activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+    assert received == [True, True]

@@ -432,6 +432,7 @@ class VoiceTypeApp:
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._tray.signals.re_inject.connect(self._on_re_inject)
+        self._tray.signals.show_status_bar.connect(self._status_bar.show)
         self._status_bar.signals.start_recording.connect(self._start_recording)
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
         self._status_bar.signals.open_settings.connect(self._open_settings)
