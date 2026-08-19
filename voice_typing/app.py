@@ -235,18 +235,71 @@ class WorkerThread(QThread):
                 return
             if not self._settings.get("fast_mode", True):
                 self._processor = TextProcessor(api_key=api_key)
-            while self._client.is_connected and not self._should_stop:
-                self._loop.run_until_complete(
-                    self._client.receive_transcript(
-                        on_partial=self._on_partial, on_final=self._on_final
+            while not self._should_stop:
+                try:
+                    self._loop.run_until_complete(
+                        self._client.receive_transcript(
+                            on_partial=self._on_partial, on_final=self._on_final
+                        )
                     )
-                )
+                except Exception as exc:
+                    last_error = str(exc)
+                    if self._should_stop:
+                        break
+                    self._signals.status.emit("Connection lost - reconnecting...")
+                if self._should_stop:
+                    break
+                if self._client.is_connected:
+                    continue
+                if self._loop is not None:
+                    self._loop.close()
+                    self._loop = None
+                if not self._reconnect():
+                    self._signals.error.emit(
+                        "Connection lost and could not reconnect: "
+                        f"{last_error[:300] or 'unknown error'}"
+                    )
+                    return
         except Exception as exc:
             self._signals.error.emit(
                 f"Speech engine connection lost: {str(exc)[:300]}"
             )
         finally:
             self._cleanup()
+
+    def _reconnect(self) -> bool:
+        api_key = self._settings.get("api_key", "")
+        delays = (2, 4, 8)
+        last_error = ""
+        for attempt, delay in enumerate(delays, start=1):
+            if self._should_stop:
+                return False
+            time.sleep(delay)
+            if self._should_stop:
+                return False
+            try:
+                client = GeminiLiveClient(
+                    api_key=api_key,
+                    model=self._settings.get("model") or MODEL,
+                )
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(client.connect())
+            except Exception as exc:
+                last_error = str(exc)
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+                self._signals.status.emit(
+                    f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
+                )
+                continue
+            self._client = client
+            self._loop = loop
+            self._signals.status.emit("Reconnected to Gemini Live")
+            return True
+        return False
 
 
 class VoiceTypeApp:
