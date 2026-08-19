@@ -3,11 +3,21 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QObject,
+    QPoint,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -31,9 +41,10 @@ class _ControlWindow(QWidget):
         self._on_close = on_close
 
     def closeEvent(self, event) -> None:
+        # Keep the hide-and-ignore semantics, but let StatusBar.close() route
+        # the hide through the fade-out animation instead of hiding instantly.
         self._on_close()
         event.ignore()
-        self.hide()
 
 
 class _DraggableCapsule(QFrame):
@@ -75,6 +86,65 @@ class _DraggableCapsule(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class _LevelMeter(QWidget):
+    """5-segment microphone level meter.
+
+    Painted in paintEvent so per-chunk audio level updates (~66 Hz) only
+    trigger a repaint of 5 small rounded rects instead of stylesheet churn.
+    """
+
+    SEGMENT_COUNT = 5
+    SEGMENT_WIDTH = 4
+    SEGMENT_HEIGHT = 10
+    SEGMENT_GAP = 2
+    SEGMENT_RADIUS = 2
+    LIT_COLOR = QColor("#e8eaed")
+    DIM_COLOR = QColor(255, 255, 255, 38)  # rgba(255, 255, 255, 0.15)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._level = 0.0
+        width = (
+            self.SEGMENT_COUNT * self.SEGMENT_WIDTH
+            + (self.SEGMENT_COUNT - 1) * self.SEGMENT_GAP
+        )
+        self.setFixedSize(width, self.SEGMENT_HEIGHT + 2)
+        self.setToolTip("Microphone level")
+
+    @property
+    def lit_segments(self) -> int:
+        """Number of lit segments for the current level, clamped to 0..5."""
+        return max(
+            0,
+            min(
+                self.SEGMENT_COUNT,
+                int(self._level * self.SEGMENT_COUNT + 0.5),
+            ),
+        )
+
+    def set_level(self, value: float) -> None:
+        self._level = max(0.0, min(1.0, value))
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        lit = self.lit_segments
+        for i in range(self.SEGMENT_COUNT):
+            painter.setBrush(self.LIT_COLOR if i < lit else self.DIM_COLOR)
+            x = i * (self.SEGMENT_WIDTH + self.SEGMENT_GAP)
+            y = (self.height() - self.SEGMENT_HEIGHT) // 2
+            painter.drawRoundedRect(
+                x,
+                y,
+                self.SEGMENT_WIDTH,
+                self.SEGMENT_HEIGHT,
+                self.SEGMENT_RADIUS,
+                self.SEGMENT_RADIUS,
+            )
+
+
 class StatusBar:
     def __init__(
         self,
@@ -87,7 +157,13 @@ class StatusBar:
         self._mic_button: QPushButton | None = None
         self._status_label: QLabel | None = None
         self._menu_button: QPushButton | None = None
+        self._meter: _LevelMeter | None = None
         self._recording = False
+        self._level = 0.0
+        self._pulse_effect: QGraphicsOpacityEffect | None = None
+        self._pulse_anim: QVariantAnimation | None = None
+        self._fade_in_anim: QPropertyAnimation | None = None
+        self._fade_out_anim: QPropertyAnimation | None = None
         self._hotkey_name = "F9"
         self._on_position_changed = on_position_changed
         self._saved_position = saved_position
@@ -117,7 +193,7 @@ class StatusBar:
         return pixmap
 
     def _build_window(self) -> _ControlWindow:
-        win = _ControlWindow(self.hide)
+        win = _ControlWindow(self.close)
         win.setWindowTitle("VoiceType")
         win.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
@@ -136,6 +212,9 @@ class StatusBar:
 
         self._state_dot = QLabel("●")
         self._state_dot.setStyleSheet("color: #34a853; font-size: 14px;")
+        self._pulse_effect = QGraphicsOpacityEffect(self._state_dot)
+        self._pulse_effect.setOpacity(1.0)
+        self._state_dot.setGraphicsEffect(self._pulse_effect)
 
         self._mic_button = QPushButton()
         self._mic_button.setIcon(QIcon(self._make_mic_pixmap("#e8eaed")))
@@ -148,6 +227,12 @@ class StatusBar:
             "QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); }"
         )
         self._mic_button.clicked.connect(self._on_toggle)
+
+        # Meter visibility follows the recording state captured at build time:
+        # update_recording_state(True) may run before the window is built.
+        self._meter = _LevelMeter()
+        self._meter.set_level(self._level)
+        self._meter.setVisible(self._recording)
 
         self._status_label = QLabel("")
         self._status_label.setMaximumWidth(130)
@@ -170,6 +255,7 @@ class StatusBar:
         row.setSpacing(8)
         row.addWidget(self._state_dot)
         row.addWidget(self._mic_button)
+        row.addWidget(self._meter)
         row.addWidget(self._status_label)
         row.addStretch(1)
         row.addWidget(self._menu_button)
@@ -216,15 +302,90 @@ class StatusBar:
         if self._on_position_changed is not None:
             self._on_position_changed(x, y)
 
+    def set_level(self, value: float) -> None:
+        """Update the mic level meter with a 0..1 value (clamped)."""
+        self._level = max(0.0, min(1.0, value))
+        if self._meter is not None:
+            self._meter.set_level(self._level)
+
+    def _start_pulse(self) -> None:
+        if self._state_dot is None or self._pulse_effect is None:
+            return
+        if self._pulse_anim is not None:
+            return  # already pulsing; do not restart on every partial transcript
+        anim = QVariantAnimation(self._state_dot)
+        anim.setStartValue(0.4)
+        anim.setEndValue(1.0)
+        anim.setDuration(350)  # 350ms up + 350ms down ~= 700ms period
+        anim.setLoopCount(-1)
+        anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        anim.valueChanged.connect(self._pulse_effect.setOpacity)
+        self._pulse_anim = anim
+        anim.start()
+
+    def _stop_pulse(self) -> None:
+        if self._pulse_anim is not None:
+            anim, self._pulse_anim = self._pulse_anim, None
+            anim.stop()
+            anim.deleteLater()
+        if self._pulse_effect is not None:
+            self._pulse_effect.setOpacity(1.0)
+
+    def _cancel_fade_in(self) -> None:
+        if self._fade_in_anim is not None:
+            anim, self._fade_in_anim = self._fade_in_anim, None
+            anim.stop()
+            anim.deleteLater()
+
+    def _cancel_fade_out(self) -> None:
+        if self._fade_out_anim is not None:
+            anim, self._fade_out_anim = self._fade_out_anim, None
+            anim.stop()
+            anim.deleteLater()
+
+    def _on_fade_in_finished(self) -> None:
+        if self._fade_in_anim is not None:
+            anim, self._fade_in_anim = self._fade_in_anim, None
+            anim.deleteLater()
+
+    def _finish_close(self) -> None:
+        if self._fade_out_anim is not None:
+            anim, self._fade_out_anim = self._fade_out_anim, None
+            anim.deleteLater()
+        self._stop_pulse()
+        if self._window is not None:
+            self._window.hide()
+            self._window = None
+            self._state_dot = None
+            self._pulse_effect = None
+            self._mic_button = None
+            self._status_label = None
+            self._menu_button = None
+            self._meter = None
+
     def show(self) -> None:
         if self._window is None:
             self._window = self._build_window()
+            self._window.setWindowOpacity(0.0)
             if self._saved_position is not None:
                 self._window.move(*self._saved_position)
             else:
                 self._move_bottom_center()
+        # Repeated show() during a fade-out: cancel it and fade back in.
+        self._cancel_fade_out()
+        self._cancel_fade_in()
         self._window.show()
         self._window.raise_()
+        # Fade in unless already fully opaque (repeated show() while visible
+        # must not restart the animation and cause a flash).
+        if self._window.windowOpacity() < 1.0:
+            anim = QPropertyAnimation(self._window, b"windowOpacity", self._window)
+            anim.setDuration(150)
+            anim.setStartValue(self._window.windowOpacity())
+            anim.setEndValue(1.0)
+            anim.finished.connect(self._on_fade_in_finished)
+            self._fade_in_anim = anim
+            anim.start()
 
     def _move_bottom_center(self) -> None:
         if self._window is None:
@@ -243,6 +404,13 @@ class StatusBar:
             self._mic_button.setToolTip(
                 "Stop recording" if recording else "Start / Stop recording"
             )
+        if self._meter is not None:
+            if recording:
+                self._meter.show()
+            else:
+                self._meter.hide()
+        if not recording:
+            self._stop_pulse()
 
     def set_state(self, state: str, text: str = "") -> None:
         colors = {
@@ -273,16 +441,26 @@ class StatusBar:
                 self._status_label.setText(title)
         if self._window is not None:
             self._window.setToolTip(text if text else title)
+        if state == "listening":
+            self._start_pulse()
+        else:
+            self._stop_pulse()
 
     def hide(self) -> None:
         if self._window is not None:
             self._window.hide()
 
     def close(self) -> None:
-        if self._window is not None:
-            self._window.hide()
-            self._window = None
-            self._state_dot = None
-            self._mic_button = None
-            self._status_label = None
-            self._menu_button = None
+        if self._window is None:
+            return
+        if self._fade_out_anim is not None:
+            return  # already fading out; guard against re-entrancy
+        self._cancel_fade_in()
+        self._stop_pulse()
+        anim = QPropertyAnimation(self._window, b"windowOpacity", self._window)
+        anim.setDuration(120)
+        anim.setStartValue(self._window.windowOpacity())
+        anim.setEndValue(0.0)
+        anim.finished.connect(self._finish_close)
+        self._fade_out_anim = anim
+        anim.start()

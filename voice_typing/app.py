@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
+import math
 import sys
 import threading
 import time
 import winsound
+from array import array
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
@@ -26,6 +29,8 @@ from voice_typing.windows.text_injector import TextInjector, auto_space
 
 DEFAULT_HOTKEY = 0x78  # VK_F9
 ERROR_ALREADY_EXISTS = 183
+MAX_HISTORY = 20
+SILENCE_THRESHOLD = 0.005
 _mutex_handle = None
 
 
@@ -42,6 +47,8 @@ class WorkerSignals(QObject):
     recording_stopped = Signal()
     error = Signal(str)
     status = Signal(str)
+    audio_level = Signal(float)
+    history_changed = Signal(list)
 
 
 class WorkerThread(QThread):
@@ -62,8 +69,13 @@ class WorkerThread(QThread):
         self._last_injected = ""
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
+        self._last_level = 0.0
+        self._history_path = Path(self._settings._path).parent / "history.json"
+        self._history = self._load_history()
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
+        if self._recording:
+            self._update_audio_level(audio_bytes)
         client = self._client
         loop = self._loop
         if client is not None and client.is_connected and loop is not None:
@@ -71,6 +83,27 @@ class WorkerThread(QThread):
                 client.send_audio(audio_bytes), loop
             )
             future.add_done_callback(self._on_audio_sent)
+
+    def _update_audio_level(self, audio_bytes: bytes) -> None:
+        # Keep this fast: it runs on the audio callback thread for every chunk.
+        if len(audio_bytes) < 2 or len(audio_bytes) % 2 != 0:
+            return
+        samples = array("h")
+        samples.frombytes(audio_bytes)
+        if not samples:
+            return
+        sum_sq = 0
+        for sample in samples:
+            sum_sq += sample * sample
+        normalized = math.sqrt(sum_sq / len(samples)) / 32768.0
+        if normalized < SILENCE_THRESHOLD:
+            self._last_level *= 0.9
+            self._signals.audio_level.emit(0.0)
+            return
+        # Gentle curve plus attack/release smoothing so the meter feels lively.
+        level = max(normalized ** 0.5, self._last_level * 0.75)
+        self._last_level = level
+        self._signals.audio_level.emit(max(0.0, min(1.0, level)))
 
     def _on_audio_sent(self, future) -> None:
         try:
@@ -123,9 +156,46 @@ class WorkerThread(QThread):
     def _inject(self, text: str) -> None:
         if not text:
             return
+        raw = text
+        text = auto_space(self._last_injected, text)
+        self._last_injected = text
+        if self._injector.inject(text):
+            self._append_history(raw)
+
+    def _re_inject(self, text: str) -> None:
+        # Re-insert previously dictated text without touching history.
+        if not text:
+            return
         text = auto_space(self._last_injected, text)
         self._last_injected = text
         self._injector.inject(text)
+
+    def _load_history(self) -> list[str]:
+        try:
+            if not self._history_path.exists():
+                return []
+            loaded = json.loads(self._history_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                return []
+            return [str(item) for item in loaded][-MAX_HISTORY:]
+        except (OSError, ValueError, UnicodeDecodeError):
+            return []
+
+    def _append_history(self, text: str) -> None:
+        if self._history and self._history[-1] == text:
+            return
+        self._history.append(text)
+        if len(self._history) > MAX_HISTORY:
+            del self._history[:-MAX_HISTORY]
+        try:
+            self._history_path.parent.mkdir(parents=True, exist_ok=True)
+            self._history_path.write_text(
+                json.dumps(self._history, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        self._signals.history_changed.emit(list(self._history))
 
     def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
         try:
@@ -361,6 +431,7 @@ class VoiceTypeApp:
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
+        self._tray.signals.re_inject.connect(self._on_re_inject)
         self._status_bar.signals.start_recording.connect(self._start_recording)
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
         self._status_bar.signals.open_settings.connect(self._open_settings)
@@ -374,6 +445,9 @@ class VoiceTypeApp:
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
         self._spawn_worker()
+        worker = self._worker
+        if worker is not None:
+            self._tray.set_history(list(worker._history))
         return self._qapp.exec()
 
     def _start_recording(self) -> None:
@@ -399,7 +473,14 @@ class VoiceTypeApp:
         self._worker._signals.partial_received.connect(self._on_partial)
         self._worker._signals.error.connect(self._on_error)
         self._worker._signals.status.connect(self._on_status)
+        self._worker._signals.audio_level.connect(self._status_bar.set_level)
+        self._worker._signals.history_changed.connect(self._tray.set_history)
         self._worker.start()
+
+    def _on_re_inject(self, text: str) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker._re_inject(text)
 
     def _stop_recording(self) -> None:
         if self._worker is not None:

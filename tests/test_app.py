@@ -122,3 +122,104 @@ def test_same_text_after_interval_is_injected_again():
         worker._on_partial("hello")
         worker._on_final("")
         assert worker._injector.inject.call_count == 2
+
+
+def test_audio_level_emitted():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import array
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._recording = True
+        captured = []
+        worker._signals.audio_level.connect(lambda v: captured.append(v))
+        chunk = array.array("h", [8000] * 240).tobytes()
+        worker._on_audio_chunk(chunk)
+        assert len(captured) == 1
+        assert isinstance(captured[0], float)
+        assert 0.0 <= captured[0] <= 1.0
+
+
+def test_audio_level_silent_emits_zero():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import array
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._recording = True
+        captured = []
+        worker._signals.audio_level.connect(lambda v: captured.append(v))
+        worker._on_audio_chunk(array.array("h", [0] * 240).tobytes())
+        assert captured == [0.0]
+
+
+def test_history_appends_and_dedupes():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import json
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._inject("hello")
+        worker._inject("hello")
+        worker._inject("world")
+        assert worker._history == ["hello", "world"]
+        history_file = Path(tmp) / "history.json"
+        assert history_file.exists()
+        assert json.loads(history_file.read_text(encoding="utf-8")) == [
+            "hello",
+            "world",
+        ]
+
+
+def test_history_persisted_and_loaded():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        worker = WorkerThread(mgr)
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._inject("a")
+        worker._inject("b")
+        worker2 = WorkerThread(mgr)
+        worker2._recorder = MagicMock()
+        worker2._injector = MagicMock()
+        assert worker2._history == ["a", "b"]
+
+
+def test_re_inject_not_in_history():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._inject("hello")
+        worker._re_inject("hello")
+        assert worker._history == ["hello"]

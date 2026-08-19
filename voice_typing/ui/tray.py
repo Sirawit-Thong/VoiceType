@@ -21,6 +21,7 @@ class TraySignals(QObject):
     test_microphone = Signal()
     exit_app = Signal()
     mode_changed = Signal(str)
+    re_inject = Signal(str)
 
 
 class TrayIcon:
@@ -31,6 +32,7 @@ class TrayIcon:
         self._mode: str = "push_to_talk"
         self._recording: bool = False
         self._status_text: str = "Ready"
+        self._history: list[str] = []
 
     def _make_icon(self) -> QIcon:
         icon = QIcon.fromTheme("audio-input-microphone")
@@ -76,42 +78,61 @@ class TrayIcon:
         if self._menu is None:
             return
         self._menu.clear()
-        status_action = QAction(f"Status: {self._status_text}")
+        status_action = QAction(f"Status: {self._status_text}", self._menu)
         status_action.setEnabled(False)
         self._menu.addAction(status_action)
         self._menu.addSeparator()
         if self._recording:
-            action = QAction("Stop Recording")
+            action = QAction("Stop Recording", self._menu)
             action.triggered.connect(self.signals.stop_recording.emit)
         else:
-            action = QAction("Start Recording")
+            action = QAction("Start Recording", self._menu)
             action.triggered.connect(self.signals.start_recording.emit)
         self._menu.addAction(action)
 
         mode_menu = self._menu.addMenu("Mode")
-        ptt_action = QAction("Push-to-Talk (hold to record)")
+        ptt_action = QAction("Push-to-Talk (hold to record)", mode_menu)
         ptt_action.setCheckable(True)
         ptt_action.setChecked(self._mode == "push_to_talk")
         ptt_action.triggered.connect(lambda: self._set_mode("push_to_talk"))
         mode_menu.addAction(ptt_action)
 
-        toggle_action = QAction("Toggle (press to start/stop)")
+        toggle_action = QAction("Toggle (press to start/stop)", mode_menu)
         toggle_action.setCheckable(True)
         toggle_action.setChecked(self._mode == "toggle")
         toggle_action.triggered.connect(lambda: self._set_mode("toggle"))
         mode_menu.addAction(toggle_action)
 
+        history_menu = self._menu.addMenu("ล่าสุด")
+        if self._history:
+            # Newest first, at most 10 entries, labels truncated with "…"
+            for full_text in reversed(self._history[-10:]):
+                if len(full_text) > 35:
+                    label = full_text[:35].rstrip() + "…"
+                else:
+                    label = full_text
+                item = QAction(label, history_menu)
+                item.setToolTip(full_text)
+                item.triggered.connect(
+                    lambda checked=False, text=full_text: self.signals.re_inject.emit(text)
+                )
+                history_menu.addAction(item)
+        else:
+            empty_action = QAction("— ว่างเปล่า —", history_menu)
+            empty_action.setEnabled(False)
+            history_menu.addAction(empty_action)
+
         self._menu.addSeparator()
-        settings_action = QAction("Settings")
+        settings_action = QAction("Settings", self._menu)
         settings_action.triggered.connect(self.signals.open_settings.emit)
         self._menu.addAction(settings_action)
 
-        test_action = QAction("Test Microphone")
+        test_action = QAction("Test Microphone", self._menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
         self._menu.addAction(test_action)
 
         self._menu.addSeparator()
-        exit_action = QAction("Exit")
+        exit_action = QAction("Exit", self._menu)
         exit_action.triggered.connect(self.signals.exit_app.emit)
         self._menu.addAction(exit_action)
 
@@ -123,6 +144,11 @@ class TrayIcon:
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._build_menu()
+
+    def set_history(self, items: list[str]) -> None:
+        self._history = list(items)
+        if self._menu is not None:
+            self._build_menu()
 
     def set_status(self, status: str) -> None:
         self._status_text = status
