@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import sys
 import threading
 import time
@@ -21,9 +22,18 @@ from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
 from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
 from voice_typing.windows.startup import set_startup
-from voice_typing.windows.text_injector import TextInjector
+from voice_typing.windows.text_injector import TextInjector, auto_space
 
 DEFAULT_HOTKEY = 0x78  # VK_F9
+ERROR_ALREADY_EXISTS = 183
+_mutex_handle = None
+
+
+def _acquire_single_instance() -> bool:
+    global _mutex_handle
+    kernel32 = ctypes.windll.kernel32
+    _mutex_handle = kernel32.CreateMutexW(None, False, "VoiceType_SingleInstance")
+    return kernel32.GetLastError() != ERROR_ALREADY_EXISTS
 
 
 class WorkerSignals(QObject):
@@ -49,6 +59,7 @@ class WorkerThread(QThread):
         self._lock = threading.Lock()
         self._recording = False
         self._should_stop = False
+        self._last_injected = ""
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         client = self._client
@@ -104,12 +115,19 @@ class WorkerThread(QThread):
             self._recording = True
         self._signals.recording_started.emit()
 
+    def _inject(self, text: str) -> None:
+        if not text:
+            return
+        text = auto_space(self._last_injected, text)
+        self._last_injected = text
+        self._injector.inject(text)
+
     def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
         try:
             text = future.result()
         except Exception:
             text = raw
-        self._injector.inject(text)
+        self._inject(text)
 
     def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:
@@ -124,7 +142,7 @@ class WorkerThread(QThread):
         if not text.strip():
             return
         if self._processor is None or self._loop is None:
-            self._injector.inject(text)
+            self._inject(text)
             return
         try:
             running = asyncio.get_running_loop()
@@ -143,7 +161,7 @@ class WorkerThread(QThread):
                 text = future.result(timeout=4)
             except Exception:
                 pass
-            self._injector.inject(text)
+            self._inject(text)
 
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
@@ -177,6 +195,14 @@ class WorkerThread(QThread):
             return
         self.reconfigure_hotkey()
         self._hotkey_mgr.start()
+        self._hotkey_mgr.wait_ready(timeout=2.0)
+        failures = self._hotkey_mgr.registration_failures()
+        if failures:
+            self._signals.error.emit(
+                "Hotkey "
+                + ", ".join(hotkey_name(v) for v in failures)
+                + " failed to register - another app may already be using it"
+            )
         last_error = ""
         try:
             self._signals.status.emit("Connecting to Gemini Live...")
@@ -304,7 +330,6 @@ class VoiceTypeApp:
         self._status_bar.show()
         self._status_bar.set_state("error", msg)
         self._tray.set_status("Error")
-        self._tray.set_status("Error")
 
     def _on_status(self, msg: str) -> None:
         self._status_bar.set_state("ready", msg)
@@ -372,6 +397,14 @@ class VoiceTypeApp:
 
 
 def main() -> int:
+    if not _acquire_single_instance():
+        app = QApplication(sys.argv)
+        QMessageBox.warning(
+            None,
+            "VoiceType",
+            "VoiceType is already running. Check the system tray (bottom-right).",
+        )
+        return 1
     app = VoiceTypeApp()
     return app.run()
 

@@ -59,6 +59,16 @@ class INPUT(ctypes.Structure):
 
 INPUT_KEYBOARD = 1
 
+NO_SPACE_BEFORE = ".,!?;:ฯๆ"
+
+
+def auto_space(previous: str, current: str) -> str:
+    if not previous or not current:
+        return current
+    if previous[-1].isspace() or current[0] in NO_SPACE_BEFORE:
+        return previous + current
+    return previous + " " + current
+
 
 def _send_unicode_char(char: str) -> bool:
     for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):

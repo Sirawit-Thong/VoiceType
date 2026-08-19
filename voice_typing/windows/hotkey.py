@@ -127,6 +127,12 @@ class HotkeyManager:
         self._thread = threading.Thread(target=self._message_loop, daemon=True)
         self._thread.start()
 
+    def wait_ready(self, timeout: float = 2.0) -> bool:
+        return self._started.wait(timeout=timeout)
+
+    def registration_failures(self) -> list[int]:
+        return list(self._registration_failures)
+
     def stop(self) -> None:
         if not self._running:
             return
