@@ -258,6 +258,7 @@ class WorkerThread(QThread):
                     break
                 if self._client.is_connected:
                     continue
+                self._stop_recording_on_connection_lost()
                 if self._loop is not None:
                     self._loop.close()
                     self._loop = None
@@ -273,6 +274,19 @@ class WorkerThread(QThread):
             )
         finally:
             self._cleanup()
+
+    def _stop_recording_on_connection_lost(self) -> None:
+        stopped = False
+        with self._lock:
+            if self._recording:
+                self._recorder.stop()
+                self._recording = False
+                stopped = True
+        if stopped:
+            self._signals.recording_stopped.emit()
+            text = self._buffer.finalize()
+            if text.strip():
+                self._inject(text)
 
     def _reconnect(self) -> bool:
         api_key = self._settings.get("api_key", "")

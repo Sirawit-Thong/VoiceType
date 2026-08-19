@@ -26,3 +26,40 @@ def test_full_flow_mock():
         buf.add_partial("hello world")
         result = buf.finalize()
         assert result == "hello world"
+
+
+def test_stop_recording_on_connection_lost():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.speech.engine import TranscriptBuffer
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._buffer = TranscriptBuffer()
+        worker._buffer.add_partial("hello world")
+        worker._injector = MagicMock()
+        worker._stop_recording_on_connection_lost()
+        worker._recorder.stop.assert_called_once()
+        worker._injector.inject.assert_called_once_with("hello world")
+
+
+def test_connection_lost_no_double_stop():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recorder.is_recording = False
+        worker._injector = MagicMock()
+        worker._stop_recording_on_connection_lost()
+        worker._recorder.stop.assert_not_called()
+        worker._injector.inject.assert_not_called()
