@@ -65,6 +65,26 @@ def test_connection_lost_no_double_stop():
         worker._injector.inject.assert_not_called()
 
 
+def test_two_utterances_no_doubling():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+        worker._on_partial("sawasdee")
+        worker._on_final("")
+        worker._on_partial("phom pen thai")
+        worker._on_final("")
+        calls = [c.args[0] for c in worker._injector.inject.call_args_list]
+        assert calls == ["sawasdee", " phom pen thai"]
+
+
 def test_no_duplicate_injection_on_repeated_end_of_turn():
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager

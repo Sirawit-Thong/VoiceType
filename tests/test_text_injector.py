@@ -9,16 +9,16 @@ def test_injector_initialization():
 
 
 def test_auto_space_adds_space_between_utterances():
-    assert auto_space("สวัสดี", "ทำอะไรอยู่") == "สวัสดี ทำอะไรอยู่"
+    assert auto_space("สวัสดี", "ทำอะไรอยู่") == " ทำอะไรอยู่"
 
 
 def test_auto_space_no_space_after_whitespace():
-    assert auto_space("สวัสดี ", "ทำอะไรอยู่") == "สวัสดี ทำอะไรอยู่"
+    assert auto_space("สวัสดี ", "ทำอะไรอยู่") == "ทำอะไรอยู่"
 
 
 def test_auto_space_no_space_before_punctuation():
-    assert auto_space("สวัสดี", ".ต่อไป") == "สวัสดี.ต่อไป"
-    assert auto_space("สวัสดี", "ฯลฯ") == "สวัสดีฯลฯ"
+    assert auto_space("สวัสดี", ".ต่อไป") == ".ต่อไป"
+    assert auto_space("สวัสดี", "ฯลฯ") == "ฯลฯ"
 
 
 def test_auto_space_empty_inputs():

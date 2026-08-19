@@ -66,8 +66,8 @@ def auto_space(previous: str, current: str) -> str:
     if not previous or not current:
         return current
     if previous[-1].isspace() or current[0] in NO_SPACE_BEFORE:
-        return previous + current
-    return previous + " " + current
+        return current
+    return " " + current
 
 
 def _send_unicode_char(char: str) -> bool:
