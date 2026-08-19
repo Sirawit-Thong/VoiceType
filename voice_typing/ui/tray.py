@@ -5,6 +5,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QCursor,
     QIcon,
     QPainter,
     QPen,
@@ -58,6 +59,14 @@ class TrayIcon:
         self._tray.setIcon(self._make_icon())
         self._tray.setToolTip("VoiceType - Ready")
         self._menu = QMenu()
+        self._menu.setStyleSheet(
+            "QMenu { background-color: #202124; color: #e8eaed; "
+            "border: 1px solid #3c4043; border-radius: 8px; padding: 6px; }"
+            "QMenu::item { padding: 6px 18px; border-radius: 6px; }"
+            "QMenu::item:selected { background-color: #303134; }"
+            "QMenu::separator { height: 1px; background-color: #3c4043; "
+            "margin: 4px 8px; }"
+        )
         self._build_menu()
         self._tray.setContextMenu(self._menu)
         self._tray.activated.connect(self._on_activated)
@@ -126,8 +135,14 @@ class TrayIcon:
         self.set_status("Recording..." if recording else "Ready")
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.signals.start_recording.emit()
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+            QSystemTrayIcon.ActivationReason.Context,
+        ):
+            if self._menu is not None:
+                self._build_menu()
+                self._menu.popup(QCursor.pos())
 
     def hide(self) -> None:
         if self._tray is not None:
