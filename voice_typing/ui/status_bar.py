@@ -78,7 +78,7 @@ class StatusBar:
             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
         )
         win.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        win.resize(250, 50)
+        win.setFixedSize(262, 50)
 
         capsule = QFrame(win)
         capsule.setObjectName("capsule")
@@ -103,6 +103,7 @@ class StatusBar:
         self._mic_button.clicked.connect(self._on_toggle)
 
         self._status_label = QLabel("")
+        self._status_label.setMaximumWidth(130)
         self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px;")
 
         self._menu_button = QPushButton("⋯")
