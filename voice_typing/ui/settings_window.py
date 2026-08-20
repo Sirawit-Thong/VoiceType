@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap, QCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSlider,
     QSpacerItem,
@@ -70,6 +72,56 @@ class _ApiKeyTester(QThread):
             self.finished.emit(False, f"API Key test failed:\n{exc}")
 
 
+class _LiveMicTester(QThread):
+    level_changed = Signal(int)
+
+    def __init__(self, device_id: int | None = None, duration_sec: float = 5.0) -> None:
+        super().__init__()
+        self._device_id = device_id
+        self._duration_sec = duration_sec
+        self._running = False
+
+    def stop(self) -> None:
+        self._running = False
+
+    def run(self) -> None:
+        import time
+        import numpy as np
+        import sounddevice as sd
+
+        self._running = True
+        sample_rate = 16000
+        blocksize = 1600
+
+        def callback(indata, frames, time_info, status):
+            if not self._running:
+                return
+            if indata.dtype == np.int16:
+                samples = indata.astype(np.float32) / 32768.0
+            else:
+                samples = indata.astype(np.float32)
+            peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0.0
+            level = int(min(100, max(0, peak * 100)))
+            self.level_changed.emit(level)
+
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=blocksize,
+                device=self._device_id,
+                callback=callback,
+            ):
+                start_time = time.time()
+                while self._running and (time.time() - start_time < self._duration_sec):
+                    time.sleep(0.05)
+        except Exception:
+            pass
+        finally:
+            self._running = False
+
+
 class SettingsWindow(QDialog):
     saved = Signal()
 
@@ -78,26 +130,39 @@ class SettingsWindow(QDialog):
         self._settings = settings
         self._key_tester: _ApiKeyTester | None = None
         self._model_loader: _ModelLoader | None = None
+        self._mic_tester: _LiveMicTester | None = None
         self._capturing_key = False
         self._capture_timer: QTimer | None = None
         self.setWindowTitle("VoiceType Settings")
-        self.setMinimumSize(580, 560)
+        self.setMinimumSize(600, 580)
         self._build_ui()
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
-            QDialog { background: #1e1f22; color: #e8eaed; }
+            QDialog { background: #1e1f22; color: #ffffff; font-size: 10pt; }
             QTabWidget { background: transparent; }
-            QTabWidget::pane { border: 1px solid #3c4043; border-radius: 6px; top: -1px; }
-            QTabBar::tab { background: #2c2d30; color: #9aa0a6; padding: 8px 16px; border-radius: 6px 6px 0 0; }
-            QTabBar::tab:selected { background: #1e1f22; color: #e8eaed; border-bottom: 2px solid #1a73e8; }
-            QLabel { color: #e8eaed; }
-            QComboBox { background: #2c2d30; color: #e8eaed; border: 1px solid #5f6368; border-radius: 4px; padding: 4px 8px; }
-            QLineEdit { background: #2c2d30; color: #e8eaed; border: 1px solid #5f6368; border-radius: 4px; padding: 4px 8px; }
-            QCheckBox { color: #e8eaed; }
-            QPushButton { background: #2c2d30; color: #e8eaed; border: 1px solid #5f6368; border-radius: 6px; padding: 5px 14px; }
-            QSlider::groove:horizontal { background: #3c4043; height: 4px; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #1a73e8; width: 14px; height: 14px; border-radius: 7px; margin: -5px 0; }
+            QTabWidget::pane { border: 1px solid #3c4043; border-radius: 8px; background: #232428; }
+            QTabBar::tab { background: #2b2d31; color: #c4c7c5; padding: 10px 18px; font-size: 10pt; font-weight: 500; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 4px; }
+            QTabBar::tab:selected { background: #232428; color: #ffffff; font-weight: bold; border-bottom: 3px solid #8ab4f8; }
+            QTabBar::tab:hover { background: #313338; color: #ffffff; }
+            QLabel { color: #ffffff; font-size: 10pt; }
+            QComboBox { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
+            QComboBox:focus { border: 1.5px solid #8ab4f8; }
+            QComboBox QAbstractItemView { background: #2b2d31; color: #ffffff; selection-background-color: #1a73e8; selection-color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 4px; }
+            QLineEdit { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
+            QLineEdit:focus { border: 1.5px solid #8ab4f8; }
+            QCheckBox { color: #ffffff; font-size: 10pt; spacing: 8px; }
+            QCheckBox::indicator { width: 18px; height: 18px; border: 1.5px solid #5f6368; border-radius: 4px; background: #2b2d31; }
+            QCheckBox::indicator:checked { background: #1a73e8; border: 1.5px solid #1a73e8; }
+            QPushButton { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 16px; font-size: 10pt; font-weight: 500; }
+            QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
+            QPushButton:pressed { background: #1e1f22; }
+            QSlider::groove:horizontal { background: #3c4043; height: 6px; border-radius: 3px; }
+            QSlider::sub-page:horizontal { background: #1a73e8; height: 6px; border-radius: 3px; }
+            QSlider::handle:horizontal { background: #8ab4f8; width: 16px; height: 16px; border-radius: 8px; margin: -5px 0; }
+            QSlider::handle:horizontal:hover { background: #a8c7fa; }
+            QProgressBar { border: 1px solid #4e525a; border-radius: 4px; text-align: center; color: #ffffff; background: #2b2d31; }
+            QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #34a853, stop:0.7 #fbbc04, stop:1 #ea4335); border-radius: 3px; }
         """)
 
         layout = QVBoxLayout(self)
@@ -115,18 +180,18 @@ class SettingsWindow(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background: transparent; border: 1px solid #5f6368; color: #bdc1c6;
-                border-radius: 6px; padding: 6px 18px;
+                background: transparent; border: 1px solid #5f6368; color: #ffffff;
+                border-radius: 6px; padding: 6px 18px; font-size: 13px;
             }
-            QPushButton:hover { background: #303134; }
+            QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
         """)
         cancel_btn.clicked.connect(self.close)
 
         save_btn = QPushButton("Save")
         save_btn.setStyleSheet("""
             QPushButton {
-                background: #1a73e8; color: white; border: none;
-                border-radius: 6px; padding: 6px 20px; font-weight: bold;
+                background: #1a73e8; color: #ffffff; border: none;
+                border-radius: 6px; padding: 6px 20px; font-size: 13px; font-weight: bold;
             }
             QPushButton:hover { background: #1557b0; }
         """)
@@ -141,6 +206,8 @@ class SettingsWindow(QDialog):
     def _general_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
+        layout.setVerticalSpacing(12)
+        layout.setHorizontalSpacing(16)
 
         self._mode_combo = QComboBox()
         self._mode_combo.addItem("Push-to-Talk (hold key to record)", "push_to_talk")
@@ -167,29 +234,40 @@ class SettingsWindow(QDialog):
         self._show_status = QCheckBox()
         layout.addRow("Show floating status bar:", self._show_status)
 
+        sound_layout = QHBoxLayout()
         self._sound_feedback = QCheckBox()
-        layout.addRow("Sound feedback (beeps):", self._sound_feedback)
+        self._test_sound_btn = QPushButton("🔊 Test Beep")
+        self._test_sound_btn.clicked.connect(self._play_test_beep)
+        sound_layout.addWidget(self._sound_feedback)
+        sound_layout.addWidget(self._test_sound_btn)
+        sound_layout.addStretch()
+        layout.addRow("Sound feedback (beeps):", sound_layout)
+
+        self._copy_to_clipboard = QCheckBox("Also copy recognized text to clipboard")
+        layout.addRow("Clipboard:", self._copy_to_clipboard)
 
         return w
 
     def _hotkey_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
+        layout.setVerticalSpacing(12)
+        layout.setHorizontalSpacing(16)
 
         self._hotkey_combo = QComboBox()
-        layout.addRow("Voice Typing Key:", self._hotkey_combo)
+        layout.addRow("Voice Typing Key / Button:", self._hotkey_combo)
 
-        self._capture_btn = QPushButton("🎹  Press a key to capture")
+        self._capture_btn = QPushButton("🎮  Press a key or mouse button to capture")
         self._capture_btn.clicked.connect(self._start_key_capture)
         layout.addRow("", self._capture_btn)
 
         hint = QLabel(
-            "Push-to-Talk: hold the key to record, release to type. "
+            "Push-to-Talk: hold the key/mouse button to record, release to type. "
             "Toggle: press once to start, press again to stop. "
-            "Switch modes from the tray icon menu (Mode)."
+            "Supports Keyboard (F6-F12, CapsLock) & Mouse (Side Buttons, Middle Click)."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #9aa0a6;")
+        hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
         layout.addRow("", hint)
 
         return w
@@ -197,6 +275,8 @@ class SettingsWindow(QDialog):
     def _speech_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
+        layout.setVerticalSpacing(12)
+        layout.setHorizontalSpacing(16)
 
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(["Auto (Thai + English)", "Thai (ภาษาไทย)", "English"])
@@ -205,11 +285,22 @@ class SettingsWindow(QDialog):
         mic_layout = QHBoxLayout()
         self._mic_combo = QComboBox()
         refresh_btn = QPushButton("↺")
-        refresh_btn.setFixedWidth(32)
+        refresh_btn.setFixedWidth(36)
         refresh_btn.clicked.connect(self._refresh_mics)
         mic_layout.addWidget(self._mic_combo, 1)
         mic_layout.addWidget(refresh_btn)
         layout.addRow("Microphone:", mic_layout)
+
+        mic_level_layout = QHBoxLayout()
+        self._mic_level_bar = QProgressBar()
+        self._mic_level_bar.setRange(0, 100)
+        self._mic_level_bar.setValue(0)
+        self._mic_level_bar.setTextVisible(True)
+        self._test_mic_btn = QPushButton("🎤 Test Mic")
+        self._test_mic_btn.clicked.connect(self._toggle_mic_test)
+        mic_level_layout.addWidget(self._mic_level_bar, 1)
+        mic_level_layout.addWidget(self._test_mic_btn)
+        layout.addRow("Audio Level:", mic_level_layout)
 
         speed_layout = QHBoxLayout()
         self._speed_slider = QSlider(Qt.Orientation.Horizontal)
@@ -247,6 +338,8 @@ class SettingsWindow(QDialog):
     def _gemini_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
+        layout.setVerticalSpacing(12)
+        layout.setHorizontalSpacing(16)
 
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -277,9 +370,18 @@ class SettingsWindow(QDialog):
         layout.addRow("Fast Mode:", self._fast_mode)
 
         hint = QLabel("Skip AI punctuation correction for faster real-time response.")
-        hint.setStyleSheet("color: #9aa0a6; font-size: 12px;")
+        hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
         hint.setWordWrap(True)
         layout.addRow("", hint)
+
+        self._custom_vocab = QLineEdit()
+        self._custom_vocab.setPlaceholderText("e.g., Python, PySide6, Gemini, Prompt engineering")
+        layout.addRow("Custom Vocabulary / Keywords:", self._custom_vocab)
+
+        vocab_hint = QLabel("Add specific words, names, or jargon to help Gemini recognize them accurately.")
+        vocab_hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        vocab_hint.setWordWrap(True)
+        layout.addRow("", vocab_hint)
 
         return w
 
@@ -296,16 +398,16 @@ class SettingsWindow(QDialog):
         layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("VoiceType")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #e8eaed; margin-top: 8px;")
+        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff; margin-top: 8px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
 
         version = QLabel("v1.0.0")
-        version.setStyleSheet("color: #9aa0a6; font-size: 13px;")
+        version.setStyleSheet("color: #a8c7fa; font-size: 13px;")
         layout.addWidget(version, 0, Qt.AlignmentFlag.AlignCenter)
 
         desc = QLabel("Real-time Thai + English voice-to-text for Windows")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #9aa0a6; margin-top: 8px;")
+        desc.setStyleSheet("color: #c4c7c5; margin-top: 8px; font-size: 13px;")
         layout.addWidget(desc, 0, Qt.AlignmentFlag.AlignCenter)
 
         layout.addSpacing(16)
@@ -314,7 +416,10 @@ class SettingsWindow(QDialog):
         get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         get_key_btn.setStyleSheet("""
             QPushButton {
-                background: transparent; color: #1a73e8; border: none; font-size: 13px; text-decoration: underline;
+                background: transparent; color: #8ab4f8; border: none; font-size: 13px; text-decoration: underline;
+            }
+            QPushButton:hover {
+                color: #a8c7fa;
             }
         """)
         get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://aistudio.google.com/apikey")))
@@ -330,7 +435,7 @@ class SettingsWindow(QDialog):
         reset_btn = QPushButton("⚠️  Reset All Settings to Defaults")
         reset_btn.setStyleSheet("""
             QPushButton {
-                background: #3d1a1a; color: #ea4335; border: 1px solid #ea4335; border-radius: 6px; padding: 6px 16px;
+                background: #3d1a1a; color: #ea4335; border: 1px solid #ea4335; border-radius: 6px; padding: 6px 16px; font-size: 13px; font-weight: 500;
             }
             QPushButton:hover { background: #5c2020; }
         """)
@@ -339,13 +444,55 @@ class SettingsWindow(QDialog):
 
         return w
 
+    def _play_test_beep(self) -> None:
+        def _beep():
+            try:
+                import winsound
+                winsound.Beep(1000, 150)
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(target=_beep, daemon=True).start()
+
+    def _toggle_mic_test(self) -> None:
+        if self._mic_tester is not None and self._mic_tester.isRunning():
+            self._stop_mic_test()
+        else:
+            self._start_mic_test()
+
+    def _start_mic_test(self) -> None:
+        device_id = self._mic_combo.currentData()
+        self._test_mic_btn.setText("⏹ Stop Test")
+        self._mic_tester = _LiveMicTester(device_id=device_id)
+        self._mic_tester.level_changed.connect(self._mic_level_bar.setValue)
+        self._mic_tester.finished.connect(self._on_mic_test_finished)
+        self._mic_tester.start()
+
+    def _stop_mic_test(self) -> None:
+        if self._mic_tester is not None:
+            self._mic_tester.stop()
+            self._mic_tester.wait(500)
+        self._on_mic_test_finished()
+
+    def _on_mic_test_finished(self) -> None:
+        self._test_mic_btn.setText("🎤 Test Mic")
+        self._mic_level_bar.setValue(0)
+        self._mic_tester = None
+
+    def closeEvent(self, event) -> None:
+        if self._mic_tester is not None and self._mic_tester.isRunning():
+            self._mic_tester.stop()
+            self._mic_tester.wait(300)
+        super().closeEvent(event)
+
     def _populate_ui_from_settings(self) -> None:
         # General
         mode = self._settings.get("mode", "push_to_talk")
         self._mode_combo.setCurrentIndex(0 if mode == "push_to_talk" else 1)
 
-        style = self._settings.get("capsule_style", "pill")
-        self._capsule_style_combo.setCurrentIndex(0 if style == "pill" else 1)
+        style = self._capsule_style_combo.findData(self._settings.get("capsule_style", "pill"))
+        self._capsule_style_combo.setCurrentIndex(max(0, style))
 
         opacity_val = int(self._settings.get("opacity", 0.94) * 100)
         self._opacity_slider.setValue(opacity_val)
@@ -354,17 +501,18 @@ class SettingsWindow(QDialog):
         self._start_windows.setChecked(self._settings.get("start_with_windows", False))
         self._show_status.setChecked(self._settings.get("show_status_bar", True))
         self._sound_feedback.setChecked(self._settings.get("sound_feedback", True))
+        self._copy_to_clipboard.setChecked(self._settings.get("copy_to_clipboard", False))
 
         # Hotkey
         current_hotkey = self._settings.get("hotkey", 0x78)
         self._hotkey_combo.clear()
         selected = 0
         for i, (name, code) in enumerate(HOTKEY_OPTIONS):
-            self._hotkey_combo.addItem(f"{name} ({hex(code)})", code)
+            self._hotkey_combo.addItem(name, code)
             if code == current_hotkey:
                 selected = i
         if self._hotkey_combo.itemData(selected) != current_hotkey:
-            self._hotkey_combo.addItem(f"Custom ({hex(current_hotkey)})", current_hotkey)
+            self._hotkey_combo.addItem(hotkey_name(current_hotkey), current_hotkey)
             selected = self._hotkey_combo.count() - 1
         self._hotkey_combo.setCurrentIndex(selected)
 
@@ -401,6 +549,7 @@ class SettingsWindow(QDialog):
         self._model_combo.setCurrentIndex(0)
 
         self._fast_mode.setChecked(self._settings.get("fast_mode", True))
+        self._custom_vocab.setText(self._settings.get("custom_vocabulary", ""))
 
     def _refresh_mics(self) -> None:
         current = self._mic_combo.currentData()
@@ -422,7 +571,10 @@ class SettingsWindow(QDialog):
 
     def _start_key_capture(self) -> None:
         self._capturing_key = True
-        self._capture_btn.setText("⏳  Listening... (press key, Esc to cancel)")
+        self._capture_btn.setText("⏳  Listening... (press key/mouse, Esc to cancel)")
+        qapp = QApplication.instance()
+        if qapp is not None:
+            qapp.installEventFilter(self)
         if self._capture_timer is not None:
             self._capture_timer.stop()
             self._capture_timer.deleteLater()
@@ -433,11 +585,42 @@ class SettingsWindow(QDialog):
 
     def _cancel_key_capture(self) -> None:
         self._capturing_key = False
+        qapp = QApplication.instance()
+        if qapp is not None:
+            qapp.removeEventFilter(self)
         if self._capture_timer is not None:
             self._capture_timer.stop()
             self._capture_timer.deleteLater()
             self._capture_timer = None
-        self._capture_btn.setText("🎹  Press a key to capture")
+        self._capture_btn.setText("🎮  Press a key or mouse button to capture")
+
+    def _apply_captured_vk(self, vk: int) -> None:
+        selected = -1
+        for i in range(self._hotkey_combo.count()):
+            if self._hotkey_combo.itemData(i) == vk:
+                selected = i
+                break
+        if selected == -1:
+            name = hotkey_name(vk)
+            self._hotkey_combo.addItem(name, vk)
+            selected = self._hotkey_combo.count() - 1
+        self._hotkey_combo.setCurrentIndex(selected)
+        self._cancel_key_capture()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if self._capturing_key and event.type() == QEvent.Type.MouseButtonPress:
+            btn = event.button()
+            vk = 0
+            if btn == Qt.MouseButton.MiddleButton:
+                vk = 0x04
+            elif btn in (Qt.MouseButton.BackButton, Qt.MouseButton.XButton1):
+                vk = 0x05
+            elif btn in (Qt.MouseButton.ForwardButton, Qt.MouseButton.XButton2):
+                vk = 0x06
+            if vk > 0:
+                self._apply_captured_vk(vk)
+                return True
+        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event) -> None:
         if self._capturing_key:
@@ -447,17 +630,7 @@ class SettingsWindow(QDialog):
                 return
             vk = event.nativeVirtualKey()
             if vk > 0:
-                selected = -1
-                for i in range(self._hotkey_combo.count()):
-                    if self._hotkey_combo.itemData(i) == vk:
-                        selected = i
-                        break
-                if selected == -1:
-                    name = hotkey_name(vk) or f"Key_{vk}"
-                    self._hotkey_combo.addItem(f"{name} ({hex(vk)})", vk)
-                    selected = self._hotkey_combo.count() - 1
-                self._hotkey_combo.setCurrentIndex(selected)
-                self._cancel_key_capture()
+                self._apply_captured_vk(vk)
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -541,6 +714,7 @@ class SettingsWindow(QDialog):
         self._settings.set("start_with_windows", self._start_windows.isChecked())
         self._settings.set("show_status_bar", self._show_status.isChecked())
         self._settings.set("sound_feedback", self._sound_feedback.isChecked())
+        self._settings.set("copy_to_clipboard", self._copy_to_clipboard.isChecked())
         lang_map = {0: "auto", 1: "thai", 2: "english"}
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("microphone_device_id", self._mic_combo.currentData())
@@ -552,6 +726,7 @@ class SettingsWindow(QDialog):
             model_data = self._model_combo.currentText()
         self._settings.set("model", _normalize_model(str(model_data)))
         self._settings.set("fast_mode", self._fast_mode.isChecked())
+        self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
         

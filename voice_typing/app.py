@@ -155,7 +155,10 @@ class WorkerThread(QThread):
         self._silence_threshold = self._settings.get("silence_threshold", 0.005)
         api_key = self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
-            self._processor = TextProcessor(api_key=api_key)
+            self._processor = TextProcessor(
+                api_key=api_key,
+                vocabulary=self._settings.get("custom_vocabulary", ""),
+            )
         else:
             self._processor = None
 
@@ -209,6 +212,12 @@ class WorkerThread(QThread):
         self._last_injected = text
         if self._injector.inject(text):
             self._append_history(raw)
+            if self._settings.get("copy_to_clipboard", False):
+                try:
+                    import pyperclip
+                    pyperclip.copy(raw)
+                except Exception:
+                    pass
 
     def _re_inject(self, text: str) -> None:
         # Re-insert previously dictated text without touching history.
@@ -410,7 +419,10 @@ class WorkerThread(QThread):
                 )
                 return
             if not self._settings.get("fast_mode", True):
-                self._processor = TextProcessor(api_key=api_key)
+                self._processor = TextProcessor(
+                    api_key=api_key,
+                    vocabulary=self._settings.get("custom_vocabulary", ""),
+                )
             while not self._should_stop:
                 loop = self._loop
                 if loop is None:

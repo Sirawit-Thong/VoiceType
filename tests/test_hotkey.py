@@ -21,7 +21,8 @@ def test_hotkey_initial_state():
 def test_hotkey_name_helper():
     assert hotkey_name(0x75) == "F6"
     assert hotkey_name(0x7B) == "F12"
-    assert hotkey_name(0x99) == "0x99"
+    assert hotkey_name(0x41) == "Key A"
+    assert hotkey_name(0x20) == "Space"
 
 
 def test_hotkey_register_unregister():
@@ -209,4 +210,55 @@ def test_wait_for_release_cleans_up_on_exception(mock_get_async_key_state):
     mgr._wait_for_release(0x75, failing_cb)
 
     assert 0x75 not in mgr._active_release_waiters
+
+
+def test_mouse_hotkey_names():
+    assert "Middle" in hotkey_name(0x04)
+    assert "Side Button 1" in hotkey_name(0x05)
+    assert "Side Button 2" in hotkey_name(0x06)
+
+
+def test_mouse_polling_dispatching():
+    from voice_typing.windows.hotkey import VK_MBUTTON, VK_XBUTTON1
+
+    mgr = HotkeyManager()
+    m_cb = MagicMock()
+    m_rel = MagicMock()
+    x1_cb = MagicMock()
+    x1_rel = MagicMock()
+
+    mgr.register(VK_MBUTTON, m_cb, on_release=m_rel)
+    mgr.register(VK_XBUTTON1, x1_cb, on_release=x1_rel)
+
+    # 1. Simulate button down: GetAsyncKeyState returns 0x8000
+    with patch("voice_typing.windows.hotkey.user32.GetAsyncKeyState") as mock_state:
+        # Pressed
+        mock_state.side_effect = lambda vk: 0x8000 if vk == VK_MBUTTON else 0
+        mgr._running = True
+        
+        # Run one iteration of polling logic
+        for vk in list(mgr._hotkeys.keys()):
+            is_down = bool(mock_state(vk) & 0x8000)
+            was_down = mgr._mouse_pressed.get(vk, False)
+            if is_down and not was_down:
+                mgr._mouse_pressed[vk] = True
+                cb = mgr._hotkeys.get(vk)
+                if cb: cb(vk)
+
+        m_cb.assert_called_once_with(VK_MBUTTON)
+        assert mgr._mouse_pressed[VK_MBUTTON] is True
+
+        # Released
+        mock_state.side_effect = lambda vk: 0
+        for vk in list(mgr._hotkeys.keys()):
+            is_down = bool(mock_state(vk) & 0x8000)
+            was_down = mgr._mouse_pressed.get(vk, False)
+            if not is_down and was_down:
+                mgr._mouse_pressed[vk] = False
+                rel = mgr._release_callbacks.get(vk)
+                if rel: rel(vk)
+
+        m_rel.assert_called_once_with(VK_MBUTTON)
+        assert mgr._mouse_pressed[VK_MBUTTON] is False
+
 

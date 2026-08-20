@@ -17,9 +17,9 @@ REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL = "models/gemini-3.1-flash-live-preview"
 
 LANGUAGE_INSTRUCTIONS = {
-    "auto": "Support both Thai and English.",
-    "thai": "Transcribe the user's speech into Thai text.",
-    "english": "Transcribe the user's speech into English text.",
+    "auto": "Support both Thai and English. Transcribe speech naturally in the spoken language without translation.",
+    "thai": "Transcribe the user's speech strictly into Thai (ภาษาไทย). Do not output English or translate into English. Write pure Thai script.",
+    "english": "Transcribe the user's speech strictly into English. Do not output Thai or translate into Thai. Write in English.",
 }
 
 

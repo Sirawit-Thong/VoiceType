@@ -2,15 +2,17 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import time
 from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
-from PySide6.QtCore import Qt, QTimer
+import numpy as np
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager
-from voice_typing.ui.settings_window import SettingsWindow, _normalize_model
+from voice_typing.ui.settings_window import SettingsWindow, _LiveMicTester, _normalize_model
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -38,6 +40,8 @@ def test_settings_window_init_and_tabs(settings):
     assert win._opacity_label.text() == f"{int(settings.get('opacity', 0.94) * 100)}%"
     assert win._speed_label.text() == "Instant"
     assert win._sensitivity_label.text() == "Low"
+    assert win._mic_level_bar.value() == 0
+    assert win._test_mic_btn.text() == "🎤 Test Mic"
 
 
 def test_settings_window_slider_interactions(settings):
@@ -79,11 +83,13 @@ def test_settings_window_save_persists_all_fields(tmp_path):
     win._start_windows.setChecked(True)
     win._show_status.setChecked(False)
     win._sound_feedback.setChecked(False)
+    win._copy_to_clipboard.setChecked(True)
     win._lang_combo.setCurrentIndex(1)  # thai
     win._speed_slider.setValue(2)
     win._sensitivity_slider.setValue(15)
     win._api_key.setText("AIzaSyTestKey123")
     win._fast_mode.setChecked(False)
+    win._custom_vocab.setText("Python, PySide6, Gemini, Prompt engineering")
 
     win._save_and_close()
 
@@ -94,11 +100,13 @@ def test_settings_window_save_persists_all_fields(tmp_path):
     assert mgr.get("start_with_windows") is True
     assert mgr.get("show_status_bar") is False
     assert mgr.get("sound_feedback") is False
+    assert mgr.get("copy_to_clipboard") is True
     assert mgr.get("language") == "thai"
     assert mgr.get("typing_speed") == 2
     assert mgr.get("silence_threshold") == pytest.approx(0.015)
     assert mgr.get("api_key") == "AIzaSyTestKey123"
     assert mgr.get("fast_mode") is False
+    assert mgr.get("custom_vocabulary") == "Python, PySide6, Gemini, Prompt engineering"
 
 
 def test_settings_window_key_capture_success(settings):
@@ -119,7 +127,7 @@ def test_settings_window_key_capture_success(settings):
     win.keyPressEvent(event)
 
     assert not win._capturing_key
-    assert "Press a key to capture" in win._capture_btn.text()
+    assert "Press a key or mouse button to capture" in win._capture_btn.text()
     assert win._hotkey_combo.currentData() == 0x79
 
 
@@ -148,6 +156,48 @@ def test_settings_window_key_capture_timeout(settings):
     assert win._capturing_key
     win._cancel_key_capture()
     assert not win._capturing_key
+
+
+def test_settings_window_mouse_capture_middle_button(settings):
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QPointF
+
+    win = SettingsWindow(settings)
+    win._start_key_capture()
+    assert win._capturing_key
+
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(10, 10),
+        Qt.MouseButton.MiddleButton,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    handled = win.eventFilter(win, event)
+    assert handled is True
+    assert not win._capturing_key
+    assert win._hotkey_combo.currentData() == 0x04  # VK_MBUTTON
+
+
+def test_settings_window_mouse_capture_xbutton1(settings):
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QPointF
+
+    win = SettingsWindow(settings)
+    win._start_key_capture()
+    assert win._capturing_key
+
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(10, 10),
+        Qt.MouseButton.BackButton,
+        Qt.MouseButton.BackButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    handled = win.eventFilter(win, event)
+    assert handled is True
+    assert not win._capturing_key
+    assert win._hotkey_combo.currentData() == 0x05  # VK_XBUTTON1
 
 
 def test_settings_window_refresh_mics(settings):
@@ -213,6 +263,8 @@ def test_settings_window_reset_to_defaults(settings):
     win._mode_combo.setCurrentIndex(1)
     win._opacity_slider.setValue(60)
     win._api_key.setText("modified_key")
+    win._copy_to_clipboard.setChecked(True)
+    win._custom_vocab.setText("Custom Vocab Test")
 
     with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
          patch.object(QMessageBox, "information"):
@@ -222,3 +274,77 @@ def test_settings_window_reset_to_defaults(settings):
     assert win._opacity_slider.value() == int(DEFAULT_SETTINGS["opacity"] * 100)
     assert win._opacity_label.text() == f"{int(DEFAULT_SETTINGS['opacity'] * 100)}%"
     assert win._api_key.text() == DEFAULT_SETTINGS["api_key"]
+    assert win._copy_to_clipboard.isChecked() == DEFAULT_SETTINGS["copy_to_clipboard"]
+    assert win._custom_vocab.text() == DEFAULT_SETTINGS["custom_vocabulary"]
+
+
+def test_settings_window_test_beep(settings):
+    win = SettingsWindow(settings)
+    with patch("winsound.Beep", create=True) as mock_beep, \
+         patch("threading.Thread") as mock_thread:
+        mock_instance = MagicMock()
+        mock_thread.return_value = mock_instance
+        win._play_test_beep()
+        assert mock_thread.called
+        assert mock_instance.start.called
+
+
+def test_settings_window_mic_test_toggle_and_callbacks(settings):
+    win = SettingsWindow(settings)
+    assert win._test_mic_btn.text() == "🎤 Test Mic"
+    assert win._mic_level_bar.value() == 0
+
+    with patch("voice_typing.ui.settings_window._LiveMicTester") as MockTester:
+        mock_tester_instance = MagicMock()
+        MockTester.return_value = mock_tester_instance
+        mock_tester_instance.isRunning.return_value = False
+
+        # Start test
+        win._toggle_mic_test()
+        assert win._test_mic_btn.text() == "⏹ Stop Test"
+        assert win._mic_tester == mock_tester_instance
+        assert mock_tester_instance.start.called
+
+        # When level signal changes
+        win._mic_level_bar.setValue(55)
+        assert win._mic_level_bar.value() == 55
+
+        # Stop test
+        mock_tester_instance.isRunning.return_value = True
+        win._toggle_mic_test()
+        assert mock_tester_instance.stop.called
+        assert win._test_mic_btn.text() == "🎤 Test Mic"
+        assert win._mic_level_bar.value() == 0
+        assert win._mic_tester is None
+
+
+def test_live_mic_tester_thread():
+    tester = _LiveMicTester(device_id=None, duration_sec=0.1)
+    levels = []
+    tester.level_changed.connect(levels.append)
+    finished_called = []
+    tester.finished.connect(lambda: finished_called.append(True))
+
+    with patch("sounddevice.InputStream") as mock_stream:
+        # Simulate InputStream context manager triggering callback with audio data
+        class MockInputStreamCtx:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+        
+        def fake_stream(*args, **kwargs):
+            cb = kwargs.get("callback")
+            if cb:
+                fake_audio = np.array([0.5, -0.5, 0.2], dtype=np.float32)
+                cb(fake_audio, 3, None, None)
+            return MockInputStreamCtx()
+
+        mock_stream.side_effect = fake_stream
+        tester.start()
+        tester.wait(2000)
+        QApplication.processEvents()
+
+        assert len(levels) > 0
+        assert levels[0] == 50
+        assert len(finished_called) == 1
