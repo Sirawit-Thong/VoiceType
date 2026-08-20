@@ -18,6 +18,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "start_with_windows": False,
     "sound_feedback": True,
     "typing_speed": 0,
+    "capsule_style": "pill",
+    "opacity": 0.94,
+    "silence_threshold": 0.005,
 }
 
 

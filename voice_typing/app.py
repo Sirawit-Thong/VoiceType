@@ -83,6 +83,7 @@ class WorkerThread(QThread):
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
         self._last_level = 0.0
+        self._silence_threshold: float = self._settings.get("silence_threshold", 0.005)
         self._history_path = Path(self._settings._path).parent / "history.json"
         self._history = self._load_history()
 
@@ -109,7 +110,7 @@ class WorkerThread(QThread):
         for sample in samples:
             sum_sq += sample * sample
         normalized = math.sqrt(sum_sq / len(samples)) / 32768.0
-        if normalized < SILENCE_THRESHOLD:
+        if normalized < self._silence_threshold:
             self._last_level *= 0.9
             self._signals.audio_level.emit(0.0)
             return
@@ -151,6 +152,7 @@ class WorkerThread(QThread):
 
     def update_settings(self) -> None:
         self.reconfigure_hotkey()
+        self._silence_threshold = self._settings.get("silence_threshold", 0.005)
         api_key = self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
             self._processor = TextProcessor(api_key=api_key)
@@ -536,7 +538,9 @@ class VoiceTypeApp:
                 if self._settings.get("status_bar_x") is not None
                 else None
             ),
+            style=self._settings.get("capsule_style", "pill"),
         )
+        self._status_bar.set_opacity(self._settings.get("opacity", 0.94))
         self._settings_win: SettingsWindow | None = None
         self._worker: WorkerThread | None = None
         self._mic_tester: _MicTester | None = None
@@ -547,6 +551,9 @@ class VoiceTypeApp:
         self._tray.signals.open_settings.connect(self._open_settings)
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
+        self._tray.signals.language_changed.connect(self._on_language_changed)
+        self._tray.signals.fast_mode_toggled.connect(self._on_fast_mode_toggled)
+        self._tray.signals.clear_history.connect(self._on_clear_history)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._tray.signals.re_inject.connect(self._on_re_inject)
         self._tray.signals.show_status_bar.connect(self._status_bar.show)
@@ -555,6 +562,8 @@ class VoiceTypeApp:
         self._status_bar.signals.open_settings.connect(self._open_settings)
         self._status_bar.signals.exit_app.connect(self._exit)
         self._run_setup_wizard()
+        self._tray.set_language(self._settings.get("language", "auto"))
+        self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         self._tray.show()
         if self._settings.get("show_status_bar", True):
             self._status_bar.show()
@@ -659,23 +668,52 @@ class VoiceTypeApp:
         if self._worker is not None:
             self._worker.reconfigure_hotkey()
 
+    def _on_language_changed(self, lang: str) -> None:
+        self._settings.set("language", lang)
+        self._settings.save()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.update_settings()
+
+    def _on_fast_mode_toggled(self, fast: bool) -> None:
+        self._settings.set("fast_mode", fast)
+        self._settings.save()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.update_settings()
+
+    def _on_clear_history(self) -> None:
+        if self._worker is not None:
+            self._worker._history.clear()
+            self._worker._save_history()
+        self._tray.set_history([])
+
     def _open_settings(self) -> None:
         if self._settings_win is None:
             self._settings_win = SettingsWindow(self._settings)
             self._settings_win.saved.connect(self._on_settings_saved)
         self._settings_win.show()
+        self._settings_win.raise_()
+        self._settings_win.activateWindow()
 
     def _on_settings_saved(self) -> None:
         self._status_bar.set_hotkey_name(
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
+        self._status_bar.set_style(self._settings.get("capsule_style", "pill"))
+        self._status_bar.set_opacity(self._settings.get("opacity", 0.94))
         self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
+        self._tray.set_language(self._settings.get("language", "auto"))
+        self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         if self._worker is not None and self._worker.isRunning():
             self._worker.reconfigure_hotkey()
             self._worker.update_settings()
         else:
             self._spawn_worker()
         set_startup(self._settings.get("start_with_windows", False))
+        if self._settings.get("show_status_bar", True):
+            self._status_bar.show()
+        else:
+            self._status_bar.close()
+
 
     def _run_setup_wizard(self) -> None:
         if self._settings.get("api_key"):

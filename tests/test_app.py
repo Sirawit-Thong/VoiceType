@@ -379,15 +379,41 @@ def test_app_on_settings_saved():
         app._worker.isRunning.return_value = True
         app._settings.set("hotkey", 0x79)
         app._settings.set("mode", "toggle")
+        app._settings.set("capsule_style", "dot")
         app._settings.set("start_with_windows", True)
 
         app._on_settings_saved()
 
         app._status_bar.set_hotkey_name.assert_called_once_with("F10")
+        app._status_bar.set_style.assert_called_once_with("dot")
         app._tray.set_mode.assert_called_once_with("toggle")
         app._worker.reconfigure_hotkey.assert_called_once()
         app._worker.update_settings.assert_called_once()
         mock_set_startup.assert_called_once_with(True)
+
+
+def test_app_tray_event_handlers():
+    from voice_typing.app import VoiceTypeApp
+    from unittest.mock import MagicMock
+
+    app = VoiceTypeApp()
+    app._worker = MagicMock()
+    app._worker.isRunning.return_value = True
+    app._worker._history = ["line1", "line2"]
+    app._tray = MagicMock()
+
+    app._on_language_changed("thai")
+    assert app._settings.get("language") == "thai"
+    app._worker.update_settings.assert_called_once()
+
+    app._worker.update_settings.reset_mock()
+    app._on_fast_mode_toggled(False)
+    assert app._settings.get("fast_mode") is False
+    app._worker.update_settings.assert_called_once()
+
+    app._on_clear_history()
+    assert len(app._worker._history) == 0
+    app._tray.set_history.assert_called_once_with([])
 
 
 def test_app_on_test_microphone():
@@ -433,6 +459,21 @@ def test_settings_window_normalize_model():
     assert _normalize_model("") == MODEL
     assert _normalize_model(None) == MODEL
     assert _normalize_model("   ") == MODEL
+
+
+def test_settings_window_open_and_save(tmp_path):
+    from voice_typing.ui.settings_window import SettingsWindow
+    from voice_typing.config.settings import SettingsManager
+
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    win = SettingsWindow(mgr)
+    assert win._mode_combo.count() == 2
+    assert win._capsule_style_combo.count() == 2
+    win._capsule_style_combo.setCurrentIndex(1)  # "dot"
+    win._save_and_close()
+    assert mgr.get("capsule_style") == "dot"
+
 
 
 def test_worker_thread_stop():
@@ -488,4 +529,19 @@ def test_app_exit_clean_shutdown():
     app._qapp.quit.assert_called_once()
 
 
+def test_app_opacity_propagated_on_settings_saved():
+    from voice_typing.app import VoiceTypeApp
+    from unittest.mock import MagicMock, patch
 
+    app = VoiceTypeApp()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    app._worker = MagicMock()
+    app._worker.isRunning.return_value = True
+    app._settings.set('opacity', 0.75)
+    app._settings.set('capsule_style', 'pill')
+
+    with patch('voice_typing.app.set_startup'):
+        app._on_settings_saved()
+
+    app._status_bar.set_opacity.assert_called_with(0.75)

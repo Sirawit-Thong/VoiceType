@@ -18,12 +18,6 @@ def qapp():
 
 
 def _shown_tray(qapp):
-    """Create a TrayIcon whose menu is built (offscreen-safe).
-
-    QSystemTrayIcon may not be fully functional with the offscreen
-    platform; if show() fails we still build the menu manually because
-    the tests only inspect the QMenu widget structure.
-    """
     tray = TrayIcon()
     try:
         tray.show()
@@ -34,10 +28,10 @@ def _shown_tray(qapp):
     return tray
 
 
-def _find_submenu(menu, title):
+def _find_submenu(menu, partial_title):
     for action in menu.actions():
         submenu = action.menu()
-        if submenu is not None and action.text() == title:
+        if submenu is not None and partial_title in action.text():
             return submenu
     return None
 
@@ -45,7 +39,7 @@ def _find_submenu(menu, title):
 def _submenu_texts(tray):
     submenu = _find_submenu(tray._menu, "ล่าสุด")
     assert submenu is not None, "Recent (ล่าสุด) submenu not found"
-    return [action.text() for action in submenu.actions()]
+    return [action.text() for action in submenu.actions() if not action.isSeparator() and "Clear History" not in action.text()]
 
 
 def test_set_history_builds_submenu(qapp):
@@ -74,6 +68,35 @@ def test_click_emits_re_inject(qapp):
     tray.signals.re_inject.connect(received.append)
     action.trigger()
     assert received == ["a"]
+
+
+def test_clear_history_emitted(qapp):
+    tray = _shown_tray(qapp)
+    tray.set_history(["a", "b"])
+    submenu = _find_submenu(tray._menu, "ล่าสุด")
+    clear_act = next(a for a in submenu.actions() if "Clear History" in a.text())
+    received = []
+    tray.signals.clear_history.connect(lambda: received.append(True))
+    clear_act.trigger()
+    assert received == [True]
+
+
+def test_language_changed_emitted(qapp):
+    tray = _shown_tray(qapp)
+    received = []
+    tray.signals.language_changed.connect(received.append)
+    tray._set_language("thai")
+    assert received == ["thai"]
+    assert tray._language == "thai"
+
+
+def test_fast_mode_toggled_emitted(qapp):
+    tray = _shown_tray(qapp)
+    received = []
+    tray.signals.fast_mode_toggled.connect(received.append)
+    tray._toggle_fast_mode(False)
+    assert received == [False]
+    assert tray._fast_mode is False
 
 
 def test_rebuild_on_second_set_history(qapp):

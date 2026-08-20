@@ -23,6 +23,9 @@ class TraySignals(QObject):
     test_microphone = Signal()
     exit_app = Signal()
     mode_changed = Signal(str)
+    language_changed = Signal(str)
+    fast_mode_toggled = Signal(bool)
+    clear_history = Signal()
     re_inject = Signal(str)
     show_status_bar = Signal()
 
@@ -33,6 +36,8 @@ class TrayIcon:
         self._tray: QSystemTrayIcon | None = None
         self._menu: QMenu | None = None
         self._mode: str = "push_to_talk"
+        self._language: str = "auto"
+        self._fast_mode: bool = True
         self._recording: bool = False
         self._status_text: str = "Ready"
         self._history: list[str] = []
@@ -73,7 +78,6 @@ class TrayIcon:
         except Exception:
             return QIcon()
 
-
     def show(self) -> None:
         self._tray = QSystemTrayIcon()
         self._tray.setIcon(self._make_icon())
@@ -100,6 +104,7 @@ class TrayIcon:
         status_action.setEnabled(False)
         self._menu.addAction(status_action)
         self._menu.addSeparator()
+
         if self._recording:
             action = QAction("Stop Recording", self._menu)
             action.triggered.connect(self.signals.stop_recording.emit)
@@ -121,9 +126,22 @@ class TrayIcon:
         toggle_action.triggered.connect(lambda: self._set_mode("toggle"))
         mode_menu.addAction(toggle_action)
 
-        history_menu = self._menu.addMenu("ล่าสุด")
+        lang_menu = self._menu.addMenu("Language (ภาษา)")
+        for code, label in [("auto", "Auto (Thai + English)"), ("thai", "Thai (ไทย)"), ("english", "English")]:
+            act = QAction(label, lang_menu)
+            act.setCheckable(True)
+            act.setChecked(self._language == code)
+            act.triggered.connect(lambda checked=False, c=code: self._set_language(c))
+            lang_menu.addAction(act)
+
+        fast_action = QAction("Fast Mode (Direct Input)", self._menu)
+        fast_action.setCheckable(True)
+        fast_action.setChecked(self._fast_mode)
+        fast_action.triggered.connect(self._toggle_fast_mode)
+        self._menu.addAction(fast_action)
+
+        history_menu = self._menu.addMenu("ล่าสุด (Recent)")
         if self._history:
-            # Newest first, at most 10 entries, labels truncated with "…"
             for full_text in reversed(self._history[-10:]):
                 if len(full_text) > 35:
                     label = full_text[:35].rstrip() + "…"
@@ -135,6 +153,10 @@ class TrayIcon:
                     lambda checked=False, text=full_text: self.signals.re_inject.emit(text)
                 )
                 history_menu.addAction(item)
+            history_menu.addSeparator()
+            clear_act = QAction("Clear History (ล้างประวัติ)", history_menu)
+            clear_act.triggered.connect(self.signals.clear_history.emit)
+            history_menu.addAction(clear_act)
         else:
             empty_action = QAction("— ว่างเปล่า —", history_menu)
             empty_action.setEnabled(False)
@@ -147,7 +169,7 @@ class TrayIcon:
 
         test_action = QAction("Test Microphone", self._menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
-        self._menu.addAction(test_action)
+        menu_items = self._menu.addAction(test_action)
 
         self._menu.addSeparator()
         exit_action = QAction("Exit", self._menu)
@@ -161,6 +183,24 @@ class TrayIcon:
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+        self._build_menu()
+
+    def _set_language(self, lang: str) -> None:
+        self._language = lang
+        self._build_menu()
+        self.signals.language_changed.emit(lang)
+
+    def set_language(self, lang: str) -> None:
+        self._language = lang
+        self._build_menu()
+
+    def _toggle_fast_mode(self, checked: bool) -> None:
+        self._fast_mode = checked
+        self._build_menu()
+        self.signals.fast_mode_toggled.emit(checked)
+
+    def set_fast_mode(self, fast: bool) -> None:
+        self._fast_mode = fast
         self._build_menu()
 
     def set_history(self, items: list[str]) -> None:
