@@ -13,6 +13,7 @@ from array import array
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
@@ -516,8 +517,14 @@ class _MicTester(QThread):
 
 class VoiceTypeApp:
     def __init__(self) -> None:
-        self._qapp = QApplication(sys.argv)
+        self._qapp = QApplication.instance() or QApplication(sys.argv)
         self._qapp.setQuitOnLastWindowClosed(False)
+        try:
+            asset_icon = Path(__file__).resolve().parent / "assets" / "icon.png"
+            if asset_icon.exists() and hasattr(self._qapp, "setWindowIcon"):
+                self._qapp.setWindowIcon(QIcon(str(asset_icon)))
+        except Exception:
+            pass
         config_dir = Path.home() / "AppData" / "Roaming" / "VoiceType"
         self._settings = SettingsManager(config_dir / "settings.json")
         self._settings.load()
@@ -686,21 +693,26 @@ class VoiceTypeApp:
                 "No API key entered. You can configure it later in Settings.",
             )
 
-    def _exit(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.stop()
-            if not self._worker.wait(1000):
-                self._worker.terminate()
-                self._worker.wait(500)
-        if self._mic_tester is not None and self._mic_tester.isRunning():
-            self._mic_tester.terminate()
-            self._mic_tester.wait(500)
-        if self._settings_win is not None:
-            self._settings_win.close()
-        self._status_bar.close()
-        self._tray.hide()
-        _release_single_instance()
-        self._qapp.quit()
+    def _exit(self, force_exit: bool = True) -> None:
+        try:
+            if self._worker is not None and self._worker.isRunning():
+                self._worker.stop()
+                if not self._worker.wait(500):
+                    self._worker.terminate()
+            if self._mic_tester is not None and self._mic_tester.isRunning():
+                self._mic_tester.terminate()
+            if self._settings_win is not None:
+                self._settings_win.close()
+            self._status_bar.close()
+            self._tray.hide()
+        except Exception:
+            pass
+        finally:
+            _release_single_instance()
+            self._qapp.quit()
+            if force_exit:
+                import os
+                os._exit(0)
 
 
 def main() -> int:
@@ -712,12 +724,14 @@ def main() -> int:
             "VoiceType is already running. Check the system tray (bottom-right).",
         )
         return 1
+    exit_code = 0
     try:
         app = VoiceTypeApp()
         exit_code = app.run()
     finally:
         _release_single_instance()
-    return exit_code
+    import os
+    os._exit(exit_code or 0)
 
 
 if __name__ == "__main__":

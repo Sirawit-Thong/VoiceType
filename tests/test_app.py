@@ -1,4 +1,19 @@
 # tests/test_app.py
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+
+@pytest.fixture(scope="module", autouse=True)
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    yield app
+
+
 def test_imports():
     from voice_typing.config.settings import SettingsManager
     from voice_typing.audio.recorder import AudioRecorder
@@ -356,8 +371,7 @@ def test_app_on_settings_saved():
     from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
 
-    with patch("voice_typing.app.QApplication"), \
-         patch("voice_typing.app.set_startup") as mock_set_startup:
+    with patch("voice_typing.app.set_startup") as mock_set_startup:
         app = VoiceTypeApp()
         app._status_bar = MagicMock()
         app._tray = MagicMock()
@@ -380,29 +394,27 @@ def test_app_on_test_microphone():
     from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
 
-    with patch("voice_typing.app.QApplication"):
-        app = VoiceTypeApp()
-        with patch("voice_typing.app._MicTester") as mock_mic_tester_cls:
-            mock_tester_instance = MagicMock()
-            mock_mic_tester_cls.return_value = mock_tester_instance
+    app = VoiceTypeApp()
+    with patch("voice_typing.app._MicTester") as mock_mic_tester_cls:
+        mock_tester_instance = MagicMock()
+        mock_mic_tester_cls.return_value = mock_tester_instance
 
-            app._on_test_microphone()
+        app._on_test_microphone()
 
-            mock_mic_tester_cls.assert_called_once_with(
-                device_id=app._settings.get("microphone_device_id")
-            )
-            mock_tester_instance.finished_test.connect.assert_called_once_with(
-                app._on_mic_test_result
-            )
-            mock_tester_instance.start.assert_called_once()
+        mock_mic_tester_cls.assert_called_once_with(
+            device_id=app._settings.get("microphone_device_id")
+        )
+        mock_tester_instance.finished_test.connect.assert_called_once_with(
+            app._on_mic_test_result
+        )
+        mock_tester_instance.start.assert_called_once()
 
 
 def test_app_on_mic_test_result():
     from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
 
-    with patch("voice_typing.app.QApplication"), \
-         patch("voice_typing.app.QMessageBox") as mock_msgbox:
+    with patch("voice_typing.app.QMessageBox") as mock_msgbox:
         app = VoiceTypeApp()
         app._on_mic_test_result(True, "Working!")
         mock_msgbox.information.assert_called_once_with(None, "Microphone Test", "Working!")
@@ -453,27 +465,27 @@ def test_app_exit_clean_shutdown():
     from voice_typing.app import VoiceTypeApp, _release_single_instance
     from unittest.mock import MagicMock, patch
 
-    with patch("voice_typing.app.QApplication"):
-        app = VoiceTypeApp()
-        app._worker = MagicMock()
-        app._worker.isRunning.return_value = True
-        app._worker.wait.return_value = True
-        app._mic_tester = MagicMock()
-        app._mic_tester.isRunning.return_value = True
-        app._mic_tester.wait.return_value = True
-        app._settings_win = MagicMock()
-        app._status_bar = MagicMock()
-        app._tray = MagicMock()
-        app._qapp = MagicMock()
+    app = VoiceTypeApp()
+    app._worker = MagicMock()
+    app._worker.isRunning.return_value = True
+    app._worker.wait.return_value = True
+    app._mic_tester = MagicMock()
+    app._mic_tester.isRunning.return_value = True
+    app._mic_tester.wait.return_value = True
+    app._settings_win = MagicMock()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    app._qapp = MagicMock()
 
-        app._exit()
+    app._exit(force_exit=False)
 
-        app._worker.stop.assert_called_once()
-        app._worker.wait.assert_called_once_with(1000)
-        app._mic_tester.terminate.assert_called_once()
-        app._settings_win.close.assert_called_once()
-        app._status_bar.close.assert_called_once()
-        app._tray.hide.assert_called_once()
-        app._qapp.quit.assert_called_once()
+    app._worker.stop.assert_called_once()
+    app._worker.wait.assert_called_once_with(500)
+    app._mic_tester.terminate.assert_called_once()
+    app._settings_win.close.assert_called_once()
+    app._status_bar.close.assert_called_once()
+    app._tray.hide.assert_called_once()
+    app._qapp.quit.assert_called_once()
+
 
 

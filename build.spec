@@ -3,7 +3,7 @@ a = Analysis(
     ["voice_typing/app.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[("voice_typing/assets", "voice_typing/assets")],
     hiddenimports=[
         "sounddevice",
         "numpy",
@@ -27,9 +27,11 @@ exe = EXE(
     a.datas,
     [],
     name="VoiceType",
+    icon="voice_typing/assets/icon.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=False,
 )
+
