@@ -43,6 +43,7 @@ class StatusBarSignals(QObject):
     open_settings = Signal()
     test_microphone = Signal()
     exit_app = Signal()
+    language_changed = Signal(str)
 
 
 class _ControlWindow(QWidget):
@@ -186,6 +187,7 @@ class StatusBar:
         self._on_position_changed = on_position_changed
         self._saved_position = saved_position
         self._opacity: float = 0.94
+        self._language: str = "auto"
 
     @property
     def style(self) -> str:
@@ -199,6 +201,9 @@ class StatusBar:
         self._opacity = max(0.5, min(1.0, value))
         if self._window is not None:
             self._window.setWindowOpacity(self._opacity)
+
+    def set_language(self, lang: str) -> None:
+        self._language = lang
 
     def set_hotkey_name(self, name: str) -> None:
         self._hotkey_name = name
@@ -312,6 +317,21 @@ class StatusBar:
         settings_action = QAction("Settings", menu)
         settings_action.triggered.connect(self.signals.open_settings.emit)
         menu.addAction(settings_action)
+
+        lang_menu = menu.addMenu("🌐 Language")
+        for code, label in [
+            ("auto", "Auto (Thai + English)"),
+            ("thai", "Thai (ภาษาไทย)"),
+            ("english", "English"),
+        ]:
+            action = QAction(label, lang_menu)
+            action.setCheckable(True)
+            action.setChecked(self._language == code)
+            action.triggered.connect(
+                lambda checked=False, c=code: self.signals.language_changed.emit(c)
+            )
+            lang_menu.addAction(action)
+
         test_action = QAction("Test Microphone", menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
         menu.addAction(test_action)

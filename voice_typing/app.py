@@ -573,8 +573,10 @@ class VoiceTypeApp:
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
         self._status_bar.signals.open_settings.connect(self._open_settings)
         self._status_bar.signals.exit_app.connect(self._exit)
+        self._status_bar.signals.language_changed.connect(self._on_language_changed)
         self._run_setup_wizard()
         self._tray.set_language(self._settings.get("language", "auto"))
+        self._status_bar.set_language(self._settings.get("language", "auto"))
         self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         self._tray.show()
         if self._settings.get("show_status_bar", True):
@@ -683,6 +685,8 @@ class VoiceTypeApp:
     def _on_language_changed(self, lang: str) -> None:
         self._settings.set("language", lang)
         self._settings.save()
+        self._tray.set_language(lang)
+        self._status_bar.set_language(lang)
         if self._worker is not None and self._worker.isRunning():
             self._worker.update_settings()
 
@@ -712,6 +716,7 @@ class VoiceTypeApp:
         )
         self._status_bar.set_style(self._settings.get("capsule_style", "pill"))
         self._status_bar.set_opacity(self._settings.get("opacity", 0.94))
+        self._status_bar.set_language(self._settings.get("language", "auto"))
         self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
         self._tray.set_language(self._settings.get("language", "auto"))
         self._tray.set_fast_mode(self._settings.get("fast_mode", True))
