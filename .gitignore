@@ -61,4 +61,5 @@ Thumbs.db
 # User & Agent Artifacts
 .gemini/
 .superpowers/
+docs/
 settings.json
