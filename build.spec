@@ -3,8 +3,12 @@ a = Analysis(
     ["voice_typing/app.py"],
     pathex=[],
     binaries=[],
-    datas=[("voice_typing/assets", "voice_typing/assets")],
+    datas=[
+        ("voice_typing/assets", "voice_typing/assets"),
+        ("voice_typing/assets", "assets"),
+    ],
     hiddenimports=[
+        "aiohttp",
         "sounddevice",
         "numpy",
         "websockets",

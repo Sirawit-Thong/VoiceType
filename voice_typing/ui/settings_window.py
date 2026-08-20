@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QPixmap, QCursor
+from PySide6.QtGui import QCursor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from voice_typing.audio.recorder import list_input_devices
-from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager
+from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, get_asset_path
 from voice_typing.speech.gemini_live import MODEL, fetch_live_models
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
@@ -134,6 +134,11 @@ class SettingsWindow(QDialog):
         self._capturing_key = False
         self._capture_timer: QTimer | None = None
         self.setWindowTitle("VoiceType Settings")
+        icon_path = get_asset_path("icon.ico")
+        if not icon_path.exists():
+            icon_path = get_asset_path("icon.png")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.setMinimumSize(600, 580)
         self._build_ui()
 
@@ -391,9 +396,11 @@ class SettingsWindow(QDialog):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         logo_label = QLabel()
-        icon_path = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+        icon_path = get_asset_path("icon.png")
         if icon_path.exists():
-            pixmap = QPixmap(str(icon_path)).scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pixmap = QPixmap(str(icon_path)).scaled(
+                80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
             logo_label.setPixmap(pixmap)
         layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
 

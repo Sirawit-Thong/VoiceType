@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
-from voice_typing.config.settings import SettingsManager
+from voice_typing.config.settings import SettingsManager, get_asset_path
 from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
@@ -531,12 +531,19 @@ class _MicTester(QThread):
 
 class VoiceTypeApp:
     def __init__(self) -> None:
+        try:
+            # Tell Windows to treat this app as a distinct taskbar app
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("voicetype.app.1.0")
+        except Exception:
+            pass
         self._qapp = QApplication.instance() or QApplication(sys.argv)
         self._qapp.setQuitOnLastWindowClosed(False)
         try:
-            asset_icon = Path(__file__).resolve().parent / "assets" / "icon.png"
-            if asset_icon.exists() and hasattr(self._qapp, "setWindowIcon"):
-                self._qapp.setWindowIcon(QIcon(str(asset_icon)))
+            icon_file = get_asset_path("icon.ico")
+            if not icon_file.exists():
+                icon_file = get_asset_path("icon.png")
+            if icon_file.exists() and hasattr(self._qapp, "setWindowIcon"):
+                self._qapp.setWindowIcon(QIcon(str(icon_file)))
         except Exception:
             pass
         config_dir = Path.home() / "AppData" / "Roaming" / "VoiceType"

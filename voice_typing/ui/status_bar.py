@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from voice_typing.config.settings import get_asset_path
 
 
 class StatusBarSignals(QObject):
@@ -232,6 +233,11 @@ class StatusBar:
     def _build_window(self) -> _ControlWindow:
         win = _ControlWindow(self.close)
         win.setWindowTitle("VoiceType")
+        icon_path = get_asset_path("icon.ico")
+        if not icon_path.exists():
+            icon_path = get_asset_path("icon.png")
+        if icon_path.exists():
+            win.setWindowIcon(QIcon(str(icon_path)))
         win.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
         )

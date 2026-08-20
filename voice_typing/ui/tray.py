@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from voice_typing.config.settings import get_asset_path
 
 
 class TraySignals(QObject):
@@ -44,7 +45,7 @@ class TrayIcon:
 
     def _make_icon(self) -> QIcon:
         try:
-            asset_path = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+            asset_path = get_asset_path("icon.png")
             if asset_path.exists():
                 icon = QIcon(str(asset_path))
                 if not icon.isNull():

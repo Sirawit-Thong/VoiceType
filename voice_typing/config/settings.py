@@ -1,9 +1,22 @@
-# voice_typing/config/settings.py
-from __future__ import annotations
-
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def get_asset_path(filename: str = "icon.png") -> Path:
+    """Resolve asset path reliably in normal python execution and PyInstaller bundled .exe."""
+    if hasattr(sys, "_MEIPASS"):
+        p = Path(sys._MEIPASS) / "voice_typing" / "assets" / filename
+        if p.exists():
+            return p
+        p2 = Path(sys._MEIPASS) / "assets" / filename
+        if p2.exists():
+            return p2
+    pkg_assets = Path(__file__).resolve().parent.parent / "assets" / filename
+    if pkg_assets.exists():
+        return pkg_assets
+    return pkg_assets
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
