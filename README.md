@@ -154,8 +154,12 @@ pytest -v
 
 All 112 tests covering audio buffers, text injection, hotkey handling, settings persistence, and UI components should pass.
 
----
+## 📄 License & Terms of Use
 
-## 📄 License
+Copyright © 2026 **Sirawit Thong (Sirawit-Thong)**. All rights reserved.
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the **Non-Commercial License (CC BY-NC 4.0 Compatible)**:
+* ✅ **Allowed**: Free for personal, hobby, educational, research, and non-profit use. You are welcome to inspect, customize, fork, and modify the source code.
+* ❌ **Prohibited**: Any commercial use, resale, paid distribution, or bundling into commercial products/services is strictly prohibited without explicit written permission.
+
+See the full [LICENSE](LICENSE) file for complete terms and details.
