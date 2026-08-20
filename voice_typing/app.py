@@ -41,6 +41,16 @@ def _acquire_single_instance() -> bool:
     return kernel32.GetLastError() != ERROR_ALREADY_EXISTS
 
 
+def _release_single_instance() -> None:
+    global _mutex_handle
+    if _mutex_handle is not None:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_mutex_handle)
+        except Exception:
+            pass
+        _mutex_handle = None
+
+
 class WorkerSignals(QObject):
     partial_received = Signal(str)
     recording_started = Signal()
@@ -60,6 +70,8 @@ class WorkerThread(QThread):
         self._buffer = TranscriptBuffer()
         self._injector = TextInjector()
         self._hotkey_mgr = HotkeyManager()
+        self._current_hotkey_vk: int | None = None
+        self._current_language: str = "auto"
         self._client: GeminiLiveClient | None = None
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -124,13 +136,46 @@ class WorkerThread(QThread):
         self._finalize_and_inject()
 
     def reconfigure_hotkey(self) -> None:
+        new_vk = self._settings.get("hotkey", DEFAULT_HOTKEY)
+        if self._current_hotkey_vk is not None and self._current_hotkey_vk != new_vk:
+            self._hotkey_mgr.unregister(self._current_hotkey_vk)
         mode = self._settings.get("mode", "push_to_talk")
         release_cb = self._on_hotkey_release if mode == "push_to_talk" else None
         self._hotkey_mgr.register(
-            self._settings.get("hotkey", DEFAULT_HOTKEY),
+            new_vk,
             self._on_hotkey,
             on_release=release_cb,
         )
+        self._current_hotkey_vk = new_vk
+
+    def update_settings(self) -> None:
+        self.reconfigure_hotkey()
+        api_key = self._settings.get("api_key", "")
+        if not self._settings.get("fast_mode", True) and api_key:
+            self._processor = TextProcessor(api_key=api_key)
+        else:
+            self._processor = None
+
+        new_model = self._settings.get("model") or MODEL
+        new_lang = self._settings.get("language", "auto")
+        if self._client is not None:
+            client_model = getattr(self._client, "_model", "")
+            client_key = getattr(self._client, "_api_key", "")
+            client_lang = getattr(self, "_current_language", "auto")
+            if (
+                client_key != api_key
+                or client_model != new_model
+                or client_lang != new_lang
+            ):
+                if self._loop is not None and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._client.disconnect(), self._loop
+                    )
+                elif self._loop is not None:
+                    try:
+                        self._loop.run_until_complete(self._client.disconnect())
+                    except Exception:
+                        pass
 
     def _start_recording(self) -> None:
         with self._lock:
@@ -219,7 +264,7 @@ class WorkerThread(QThread):
         now = time.monotonic()
         if (
             self._last_injected_raw == text.strip()
-            and now - self._last_inject_time < 3.0
+            and now - self._last_inject_time < 0.5
         ):
             return
         self._last_injected_raw = text.strip()
@@ -259,16 +304,57 @@ class WorkerThread(QThread):
             )
         )
 
-    def _cleanup(self) -> None:
-        loop = self._loop
-        if loop is not None and self._client is not None and self._client.is_connected:
+    def _sleep(self, seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while not self._should_stop and time.monotonic() < deadline:
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        return self._should_stop
+
+    def stop(self) -> None:
+        self._should_stop = True
+        with self._lock:
+            if self._recording:
+                try:
+                    self._recorder.stop()
+                except Exception:
+                    pass
+                self._recording = False
+        client = self._client
+        if client is not None:
             try:
-                loop.run_until_complete(self._client.disconnect())
+                client.abort()
+            except Exception:
+                pass
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        try:
+            self._hotkey_mgr.stop()
+        except Exception:
+            pass
+
+    def _cleanup(self) -> None:
+        client = self._client
+        loop = self._loop
+        if loop is not None and client is not None and client.is_connected:
+            try:
+                loop.run_until_complete(client.disconnect())
+            except Exception:
+                pass
+        elif client is not None:
+            try:
+                client.abort()
             except Exception:
                 pass
         self._hotkey_mgr.stop()
         if loop is not None:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
             self._loop = None
 
     def run(self) -> None:
@@ -294,12 +380,13 @@ class WorkerThread(QThread):
                     api_key=api_key,
                     model=self._settings.get("model") or MODEL,
                 )
+                self._current_language = self._settings.get("language", "auto")
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
                 try:
                     self._loop.run_until_complete(
                         self._client.connect(
-                            language=self._settings.get("language", "auto")
+                            language=self._current_language
                         )
                     )
                     break
@@ -311,7 +398,8 @@ class WorkerThread(QThread):
                     self._client = None
                     if self._should_stop:
                         return
-                    time.sleep(3)
+                    if self._sleep(3):
+                        return
             if self._client is None or not self._client.is_connected:
                 self._signals.error.emit(
                     "Cannot connect to Gemini Live: "
@@ -376,8 +464,7 @@ class WorkerThread(QThread):
         for attempt, delay in enumerate(delays, start=1):
             if self._should_stop:
                 return False
-            time.sleep(delay)
-            if self._should_stop:
+            if self._sleep(delay):
                 return False
             loop = None
             try:
@@ -385,10 +472,11 @@ class WorkerThread(QThread):
                     api_key=api_key,
                     model=self._settings.get("model") or MODEL,
                 )
+                self._current_language = self._settings.get("language", "auto")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(
-                    client.connect(language=self._settings.get("language", "auto"))
+                    client.connect(language=self._current_language)
                 )
             except Exception as exc:
                 last_error = str(exc)
@@ -403,6 +491,27 @@ class WorkerThread(QThread):
             self._signals.status.emit("Reconnected to Gemini Live")
             return True
         return False
+
+
+class _MicTester(QThread):
+    finished_test = Signal(bool, str)
+
+    def __init__(self, device_id: int | None = None) -> None:
+        super().__init__()
+        self._device_id = device_id
+
+    def run(self) -> None:
+        try:
+            rec = AudioRecorder()
+            rec.start(
+                callback=lambda b: None,
+                device_id=self._device_id,
+            )
+            time.sleep(0.3)
+            rec.stop()
+            self.finished_test.emit(True, "Microphone is working.")
+        except Exception as e:
+            self.finished_test.emit(False, f"Microphone error: {e}")
 
 
 class VoiceTypeApp:
@@ -423,6 +532,7 @@ class VoiceTypeApp:
         )
         self._settings_win: SettingsWindow | None = None
         self._worker: WorkerThread | None = None
+        self._mic_tester: _MicTester | None = None
 
     def run(self) -> int:
         self._tray.signals.start_recording.connect(self._start_recording)
@@ -466,8 +576,10 @@ class VoiceTypeApp:
         self._settings.save()
 
     def _spawn_worker(self) -> None:
-        if self._worker is not None:
+        if self._worker is not None and self._worker.isRunning():
             return
+        if self._worker is not None and not self._worker.isRunning():
+            self._worker = None
         self._worker = WorkerThread(self._settings)
         self._worker._signals.recording_started.connect(self._on_recording_started)
         self._worker._signals.recording_stopped.connect(self._on_recording_stopped)
@@ -516,20 +628,22 @@ class VoiceTypeApp:
         self._tray.set_status("Connecting...")
 
     def _on_test_microphone(self) -> None:
-        try:
-            rec = AudioRecorder()
-            rec.start(
-                callback=lambda b: None,
-                device_id=self._settings.get("microphone_device_id"),
-            )
-            QThread.msleep(300)
-            rec.stop()
+        if self._mic_tester is not None and self._mic_tester.isRunning():
+            return
+        self._mic_tester = _MicTester(
+            device_id=self._settings.get("microphone_device_id")
+        )
+        self._mic_tester.finished_test.connect(self._on_mic_test_result)
+        self._mic_tester.start()
+
+    def _on_mic_test_result(self, success: bool, msg: str) -> None:
+        if success:
             QMessageBox.information(
-                None, "Microphone Test", "Microphone is working."
+                None, "Microphone Test", msg
             )
-        except Exception as e:
+        else:
             QMessageBox.warning(
-                None, "Microphone Test", f"Microphone error: {e}"
+                None, "Microphone Test", msg
             )
 
     def _on_mode_changed(self, mode: str) -> None:
@@ -549,8 +663,11 @@ class VoiceTypeApp:
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))
         )
         self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
-        if self._worker is not None:
+        if self._worker is not None and self._worker.isRunning():
             self._worker.reconfigure_hotkey()
+            self._worker.update_settings()
+        else:
+            self._spawn_worker()
         set_startup(self._settings.get("start_with_windows", False))
 
     def _run_setup_wizard(self) -> None:
@@ -571,11 +688,18 @@ class VoiceTypeApp:
 
     def _exit(self) -> None:
         if self._worker is not None and self._worker.isRunning():
-            self._worker._finalize_and_inject()
-            self._worker._should_stop = True
-            self._worker.wait(15000)
+            self._worker.stop()
+            if not self._worker.wait(1000):
+                self._worker.terminate()
+                self._worker.wait(500)
+        if self._mic_tester is not None and self._mic_tester.isRunning():
+            self._mic_tester.terminate()
+            self._mic_tester.wait(500)
+        if self._settings_win is not None:
+            self._settings_win.close()
         self._status_bar.close()
         self._tray.hide()
+        _release_single_instance()
         self._qapp.quit()
 
 
@@ -588,8 +712,12 @@ def main() -> int:
             "VoiceType is already running. Check the system tray (bottom-right).",
         )
         return 1
-    app = VoiceTypeApp()
-    return app.run()
+    try:
+        app = VoiceTypeApp()
+        exit_code = app.run()
+    finally:
+        _release_single_instance()
+    return exit_code
 
 
 if __name__ == "__main__":

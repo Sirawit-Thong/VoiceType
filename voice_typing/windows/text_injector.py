@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 import time
 
 import pyperclip
@@ -71,13 +72,19 @@ def auto_space(previous: str, current: str) -> str:
 
 
 def _send_unicode_char(char: str) -> bool:
-    for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
-        inp = INPUT(
-            INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, ord(char), flags, 0, None))
-        )
-        sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-        if sent != 1:
-            return False
+    utf16_bytes = char.encode("utf-16le")
+    utf16_units = [
+        int.from_bytes(utf16_bytes[i : i + 2], "little")
+        for i in range(0, len(utf16_bytes), 2)
+    ]
+    for unit in utf16_units:
+        for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+            inp = INPUT(
+                INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, flags, 0, None))
+            )
+            sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+            if sent != 1:
+                return False
     return True
 
 
@@ -90,12 +97,35 @@ def _send_key_up(vk: int) -> None:
 
 
 class TextInjector:
-    def inject(self, text: str) -> bool:
+    def __init__(
+        self,
+        restore_delay: float = 0.2,
+        typing_speed: float = 0.0,
+    ) -> None:
+        self.restore_delay = restore_delay
+        self.typing_speed = typing_speed
+
+    def inject(self, text: str, typing_speed: float | None = None) -> bool:
         if self._clipboard_inject(text):
             return True
-        if self._sendinput_inject(text):
+        if self._sendinput_inject(text, typing_speed=typing_speed):
             return True
         return False
+
+    def _restore_clipboard_async(
+        self, text: str, delay: float = 0.2
+    ) -> threading.Thread:
+        def _restore() -> None:
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                pyperclip.copy(text)
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_restore, daemon=True)
+        t.start()
+        return t
 
     def _clipboard_inject(self, text: str) -> bool:
         try:
@@ -111,47 +141,28 @@ class TextInjector:
             _send_key_up(VK_V)
             _send_key_up(VK_CONTROL)
             time.sleep(0.02)
+            if original:
+                self._restore_clipboard_async(original, delay=self.restore_delay)
             return True
         except Exception:
+            if original:
+                self._restore_clipboard_async(original, delay=0.0)
             return False
-        finally:
-            try:
-                if original:
-                    pyperclip.copy(original)
-            except Exception:
-                pass
 
-    def _sendinput_inject(self, text: str) -> bool:
+    def _sendinput_inject(
+        self, text: str, typing_speed: float | None = None
+    ) -> bool:
+        speed = self.typing_speed if typing_speed is None else typing_speed
         try:
             for char in text:
                 if not self._send_char(char):
                     return False
+                if speed > 0:
+                    time.sleep(speed)
             return True
         except Exception:
             return False
 
     def _send_char(self, char: str) -> bool:
-        codes = _char_to_vk_sc(char)
-        if codes is None:
-            return _send_unicode_char(char)
-        for vk, sc, hold in codes:
-            _send_key_down(vk)
-            time.sleep(0.001)
-        for vk, sc, hold in reversed(codes):
-            _send_key_up(vk)
-            time.sleep(0.001)
-        return True
+        return _send_unicode_char(char)
 
-
-def _char_to_vk_sc(char: str) -> list[tuple[int, int, bool]] | None:
-    scanned = user32.VkKeyScanW(ord(char))
-    if scanned == 0xFFFF:
-        return None
-    vk = scanned & 0xFF
-    sc = user32.MapVirtualKeyW(vk, 0)
-    shift = (scanned >> 8) & 0xFF
-    result = []
-    if shift & 0x01:
-        result.append((0x10, 0, True))
-    result.append((vk, sc, False))
-    return result

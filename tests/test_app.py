@@ -223,3 +223,257 @@ def test_re_inject_not_in_history():
         worker._inject("hello")
         worker._re_inject("hello")
         assert worker._history == ["hello"]
+
+
+def test_reconfigure_hotkey_unregisters_old_and_registers_new():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("hotkey", 0x78)  # F9
+        mgr.set("mode", "push_to_talk")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+
+        # Initial registration
+        worker.reconfigure_hotkey()
+        worker._hotkey_mgr.register.assert_called_once_with(
+            0x78, worker._on_hotkey, on_release=worker._on_hotkey_release
+        )
+        worker._hotkey_mgr.unregister.assert_not_called()
+        assert worker._current_hotkey_vk == 0x78
+
+        # Reconfigure to F10 (0x79)
+        mgr.set("hotkey", 0x79)
+        worker.reconfigure_hotkey()
+        worker._hotkey_mgr.unregister.assert_called_once_with(0x78)
+        worker._hotkey_mgr.register.assert_called_with(
+            0x79, worker._on_hotkey, on_release=worker._on_hotkey_release
+        )
+        assert worker._current_hotkey_vk == 0x79
+
+        # Switch mode to toggle: same hotkey, release callback is None, no unregister called
+        mgr.set("mode", "toggle")
+        worker.reconfigure_hotkey()
+        assert worker._hotkey_mgr.unregister.call_count == 1
+        worker._hotkey_mgr.register.assert_called_with(
+            0x79, worker._on_hotkey, on_release=None
+        )
+        assert worker._current_hotkey_vk == 0x79
+
+
+def test_repeated_utterance_short_debounce_window():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+
+        # 1. First injection
+        worker._on_partial("hello")
+        worker._on_final("")
+        assert worker._injector.inject.call_count == 1
+        assert worker._injector.inject.call_args[0][0] == "hello"
+
+        # 2. Duplicate within 0.5s is dropped
+        worker._on_partial("hello")
+        worker._on_final("")
+        assert worker._injector.inject.call_count == 1
+
+        # 3. Same text after 0.6s is injected
+        worker._last_inject_time -= 0.6
+        worker._on_partial("hello")
+        worker._on_final("")
+        assert worker._injector.inject.call_count == 2
+
+        # 4. Different text within short window is injected immediately
+        worker._on_partial("world")
+        worker._on_final("")
+        assert worker._injector.inject.call_count == 3
+
+
+def test_worker_update_settings():
+    from voice_typing.app import WorkerThread
+    from voice_typing.ai.text_processor import TextProcessor
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-123")
+        mgr.set("fast_mode", True)
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+
+        # Fast mode = True -> no text processor
+        worker.update_settings()
+        assert worker._processor is None
+
+        # Fast mode = False -> instantiate TextProcessor
+        mgr.set("fast_mode", False)
+        worker.update_settings()
+        assert isinstance(worker._processor, TextProcessor)
+
+        # Empty api key -> processor is None
+        mgr.set("api_key", "")
+        worker.update_settings()
+        assert worker._processor is None
+
+        # Dynamic client disconnect when model/language changes
+        mgr.set("api_key", "test-key-123")
+        mgr.set("model", "models/gemini-2.0-flash")
+        mgr.set("language", "auto")
+        worker._client = MagicMock()
+        worker._client._api_key = "test-key-123"
+        worker._client._model = "models/gemini-2.0-flash"
+        worker._current_language = "auto"
+        worker._loop = MagicMock()
+        worker._loop.is_running.return_value = False
+
+        # Changing language triggers disconnect
+        mgr.set("language", "thai")
+        worker.update_settings()
+        worker._loop.run_until_complete.assert_called_once_with(
+            worker._client.disconnect()
+        )
+
+
+def test_app_on_settings_saved():
+    from voice_typing.app import VoiceTypeApp
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.QApplication"), \
+         patch("voice_typing.app.set_startup") as mock_set_startup:
+        app = VoiceTypeApp()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        app._worker = MagicMock()
+        app._worker.isRunning.return_value = True
+        app._settings.set("hotkey", 0x79)
+        app._settings.set("mode", "toggle")
+        app._settings.set("start_with_windows", True)
+
+        app._on_settings_saved()
+
+        app._status_bar.set_hotkey_name.assert_called_once_with("F10")
+        app._tray.set_mode.assert_called_once_with("toggle")
+        app._worker.reconfigure_hotkey.assert_called_once()
+        app._worker.update_settings.assert_called_once()
+        mock_set_startup.assert_called_once_with(True)
+
+
+def test_app_on_test_microphone():
+    from voice_typing.app import VoiceTypeApp
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.QApplication"):
+        app = VoiceTypeApp()
+        with patch("voice_typing.app._MicTester") as mock_mic_tester_cls:
+            mock_tester_instance = MagicMock()
+            mock_mic_tester_cls.return_value = mock_tester_instance
+
+            app._on_test_microphone()
+
+            mock_mic_tester_cls.assert_called_once_with(
+                device_id=app._settings.get("microphone_device_id")
+            )
+            mock_tester_instance.finished_test.connect.assert_called_once_with(
+                app._on_mic_test_result
+            )
+            mock_tester_instance.start.assert_called_once()
+
+
+def test_app_on_mic_test_result():
+    from voice_typing.app import VoiceTypeApp
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.QApplication"), \
+         patch("voice_typing.app.QMessageBox") as mock_msgbox:
+        app = VoiceTypeApp()
+        app._on_mic_test_result(True, "Working!")
+        mock_msgbox.information.assert_called_once_with(None, "Microphone Test", "Working!")
+
+        mock_msgbox.reset_mock()
+        app._on_mic_test_result(False, "Failed!")
+        mock_msgbox.warning.assert_called_once_with(None, "Microphone Test", "Failed!")
+
+
+def test_settings_window_normalize_model():
+    from voice_typing.ui.settings_window import _normalize_model
+    from voice_typing.speech.gemini_live import MODEL
+
+    assert _normalize_model("gemini-2.0-flash") == "models/gemini-2.0-flash"
+    assert _normalize_model("models/gemini-2.0-flash") == "models/gemini-2.0-flash"
+    assert _normalize_model("") == MODEL
+    assert _normalize_model(None) == MODEL
+    assert _normalize_model("   ") == MODEL
+
+
+def test_worker_thread_stop():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._client = MagicMock()
+        worker._loop = MagicMock()
+        worker._loop.is_running.return_value = True
+        worker._hotkey_mgr = MagicMock()
+
+        worker.stop()
+
+        assert worker._should_stop is True
+        assert worker._recording is False
+        worker._recorder.stop.assert_called_once()
+        worker._client.abort.assert_called_once()
+        worker._loop.call_soon_threadsafe.assert_called_once()
+        worker._hotkey_mgr.stop.assert_called_once()
+
+
+def test_app_exit_clean_shutdown():
+    from voice_typing.app import VoiceTypeApp, _release_single_instance
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.QApplication"):
+        app = VoiceTypeApp()
+        app._worker = MagicMock()
+        app._worker.isRunning.return_value = True
+        app._worker.wait.return_value = True
+        app._mic_tester = MagicMock()
+        app._mic_tester.isRunning.return_value = True
+        app._mic_tester.wait.return_value = True
+        app._settings_win = MagicMock()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        app._qapp = MagicMock()
+
+        app._exit()
+
+        app._worker.stop.assert_called_once()
+        app._worker.wait.assert_called_once_with(1000)
+        app._mic_tester.terminate.assert_called_once()
+        app._settings_win.close.assert_called_once()
+        app._status_bar.close.assert_called_once()
+        app._tray.hide.assert_called_once()
+        app._qapp.quit.assert_called_once()
+
+

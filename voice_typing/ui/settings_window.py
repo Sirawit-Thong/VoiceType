@@ -24,6 +24,9 @@ from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
 def _normalize_model(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return MODEL
     return name if name.startswith("models/") else f"models/{name}"
 
 
@@ -182,7 +185,7 @@ class SettingsWindow(QDialog):
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("microphone_device_id", self._mic_combo.currentData())
         self._settings.set("api_key", self._api_key.text())
-        self._settings.set("model", str(self._model_combo.currentData()))
+        self._settings.set("model", _normalize_model(str(self._model_combo.currentData() or self._model_combo.currentText())))
         self._settings.set("fast_mode", self._fast_mode.isChecked())
         self._settings.set("hotkey", int(self._hotkey_combo.currentData()))
         self._settings.save()
@@ -211,10 +214,11 @@ class SettingsWindow(QDialog):
         self._model_combo.clear()
         selected = 0
         for i, name in enumerate(models):
-            self._model_combo.addItem(name, name)
-            if name == current:
+            norm_name = _normalize_model(name)
+            self._model_combo.addItem(norm_name, norm_name)
+            if norm_name == current:
                 selected = i
-        if self._model_combo.itemData(selected) != current:
+        if self._model_combo.count() == 0 or self._model_combo.itemData(selected) != current:
             self._model_combo.addItem(f"Custom: {current}", current)
             selected = self._model_combo.count() - 1
         self._model_combo.setCurrentIndex(selected)

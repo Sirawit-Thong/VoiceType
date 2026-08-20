@@ -35,11 +35,11 @@ def fetch_live_models(api_key: str) -> list[str]:
     live = sorted(
         m["name"]
         for m in models
-        if "bidiGenerateContent" in m.get("supportedGenerationMethods", [])
+        if "name" in m and "bidiGenerateContent" in m.get("supportedGenerationMethods", [])
     )
     if live:
         return live
-    return sorted(m["name"] for m in models)
+    return sorted(m["name"] for m in models if "name" in m)
 
 
 class GeminiLiveClient:
@@ -48,6 +48,7 @@ class GeminiLiveClient:
         self._model = model
         self._ws: ClientConnection | None = None
         self._connected = False
+        self._has_unfinalized = False
 
     @property
     def is_connected(self) -> bool:
@@ -78,6 +79,7 @@ class GeminiLiveClient:
         }
         await self._ws.send(json.dumps(setup_msg))
         self._connected = True
+        self._has_unfinalized = False
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         if self._ws is None:
@@ -106,12 +108,19 @@ class GeminiLiveClient:
             if "serverContent" in data:
                 sc = data["serverContent"]
                 text = sc.get("inputTranscription", {}).get("text", "")
-                if text and not sc.get("turnComplete", False):
+                turn_complete = sc.get("turnComplete", False)
+
+                if text and not turn_complete:
+                    self._has_unfinalized = True
                     on_partial(text)
-                if sc.get("turnComplete", False):
-                    on_final(text)
+                if turn_complete:
+                    if text or self._has_unfinalized:
+                        self._has_unfinalized = False
+                        on_final(text)
                 elif "modelTurn" in sc:
-                    on_final("")
+                    if self._has_unfinalized:
+                        self._has_unfinalized = False
+                        on_final("")
         except asyncio.TimeoutError:
             pass
         except Exception:
@@ -120,6 +129,24 @@ class GeminiLiveClient:
 
     async def disconnect(self) -> None:
         if self._ws is not None:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
             self._ws = None
         self._connected = False
+        self._has_unfinalized = False
+
+    def abort(self) -> None:
+        self._connected = False
+        self._has_unfinalized = False
+        ws = self._ws
+        self._ws = None
+        if ws is not None:
+            try:
+                if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:
+                    ws.protocol.transport.close()
+                elif hasattr(ws, "transport") and ws.transport is not None:
+                    ws.transport.close()
+            except Exception:
+                pass

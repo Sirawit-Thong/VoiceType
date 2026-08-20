@@ -20,22 +20,38 @@ class TextProcessor:
             "Output only the corrected text.\n\n"
             f"Transcription: {text}"
         )
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}"
+        model_name = (
+            self._model.removeprefix("models/")
+            if self._model
+            else "gemini-2.0-flash"
+        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self._api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
         }
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                async with session.post(
+                    url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=3),
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
                             parts = candidates[0].get("content", {}).get("parts", [])
-                            return "".join(p.get("text", "") for p in parts).strip()
+                            result = "".join(p.get("text", "") for p in parts).strip()
+                            if result:
+                                return result
+                    else:
+                        logging.warning(
+                            "TextProcessor API returned HTTP %s", resp.status
+                        )
         except Exception:
             logging.warning(
                 "TextProcessor failed; returning raw text", exc_info=True
             )
         return text
+
