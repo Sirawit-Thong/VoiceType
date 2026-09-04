@@ -108,11 +108,18 @@ class WorkerThread(QThread):
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         if self._recording:
             self._update_audio_level(audio_bytes)
-        client = self._client
+            with self._lock:
+                self._pcm_buffer.extend(audio_bytes)
+        provider = self._provider
         loop = self._loop
-        if client is not None and client.is_connected and loop is not None:
+        if (
+            provider is not None
+            and self._supports_streaming
+            and loop is not None
+            and getattr(provider, "is_session_open", True)
+        ):
             future = asyncio.run_coroutine_threadsafe(
-                client.send_audio(audio_bytes), loop
+                provider.send_audio(audio_bytes), loop
             )
             future.add_done_callback(self._on_audio_sent)
 
@@ -205,11 +212,16 @@ class WorkerThread(QThread):
         with self._lock:
             if self._recording:
                 return
-            client = self._client
-            if client is None or not client.is_connected:
-                self._signals.error.emit(
-                    "Not connected to Gemini Live yet - wait a moment and press the hotkey again"
-                )
+            provider = self._provider
+            if self._supports_streaming:
+                session_open = bool(provider is not None and getattr(provider, "is_session_open", False))
+                if provider is None or not session_open:
+                    self._signals.error.emit(
+                        "Not connected yet - wait a moment and press the hotkey again"
+                    )
+                    return
+            elif provider is None:
+                self._signals.error.emit("Speech provider is not ready")
                 return
             try:
                 self._recorder.start(
@@ -219,6 +231,7 @@ class WorkerThread(QThread):
             except Exception:
                 self._signals.error.emit("Failed to start microphone")
                 return
+            self._pcm_buffer.clear()
             self._recording = True
         self._signals.recording_started.emit()
 
@@ -326,6 +339,10 @@ class WorkerThread(QThread):
         self._signals.partial_received.emit(text)
 
     def _on_final(self, text: str) -> None:
+        if not self._supports_streaming:
+            if text and text.strip():
+                self._inject(text)
+            return
         if text:
             self._buffer.add_partial(text)
         self._finalize_and_inject(
@@ -333,6 +350,32 @@ class WorkerThread(QThread):
                 self._settings.get("mode", "push_to_talk") == "push_to_talk"
             )
         )
+
+    def _snapshot_profile(self) -> ProviderProfile:
+        return build_profile(self._settings.as_dict())
+
+    def _on_provider_event(self, event: TranscriptEvent) -> None:
+        if event.kind == EventKind.PARTIAL:
+            if not self._supports_streaming:
+                return
+            self._on_partial(event.text)
+        elif event.kind == EventKind.FINAL:
+            self._on_final(event.text or "")
+        elif event.error is not None:
+            self._on_provider_error(event.error)
+        elif event.text:
+            self._signals.status.emit(event.text)
+
+    def _on_provider_error(self, error) -> None:
+        message = redact_text(error.message)[:300] or error.category.value
+        if error.category in (
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.UNSUPPORTED,
+            ErrorCategory.INVALID_CONFIGURATION,
+        ):
+            self._signals.error.emit(message)
+        else:
+            self._signals.status.emit(message)
 
     def _sleep(self, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
