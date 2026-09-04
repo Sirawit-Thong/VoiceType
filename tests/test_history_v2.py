@@ -38,3 +38,40 @@ def test_trim_evicts_oldest_unpinned_never_pinned():
 
 def test_consecutive_duplicate_guard_compares_text():
     assert _mk("a")["text"] == _mk("a")["text"]
+
+
+def test_worker_loads_legacy_str_list(tmp_path):
+    import json
+
+    from voice_typing.config.settings import SettingsManager
+    cfg = tmp_path / "settings.json"
+    settings = SettingsManager(cfg)
+    settings.load()
+    hist = tmp_path / "history.json"
+    hist.write_text(json.dumps(["a", "b"]), encoding="utf-8")
+    from voice_typing.app import WorkerThread
+    w = WorkerThread.__new__(WorkerThread)
+    w._settings = settings
+    w._history_path = hist
+    loaded = WorkerThread._load_history(w)
+    assert [e["text"] for e in loaded] == ["a", "b"]
+    assert all(e["pinned"] is False for e in loaded)
+
+
+def test_worker_clear_history_keeps_pinned(tmp_path):
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    cfg = tmp_path / "settings.json"
+    settings = SettingsManager(cfg)
+    settings.load()
+    w = WorkerThread.__new__(WorkerThread)
+    w._settings = settings
+    w._history_path = tmp_path / "history.json"
+    import voice_typing.app as appmod
+    w._signals = appmod.WorkerSignals()
+    w._history = [
+        {"text": "keep", "pinned": True, "created_at": NOW},
+        {"text": "drop", "pinned": False, "created_at": NOW},
+    ]
+    w.clear_history(keep_pinned=True)
+    assert [e["text"] for e in w._history] == ["keep"]

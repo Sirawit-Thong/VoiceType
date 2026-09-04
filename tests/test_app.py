@@ -209,13 +209,12 @@ def test_history_appends_and_dedupes():
         worker._inject("hello")
         worker._inject("hello")
         worker._inject("world")
-        assert worker._history == ["hello", "world"]
+        assert [e["text"] for e in worker._history] == ["hello", "world"]
         history_file = Path(tmp) / "history.json"
         assert history_file.exists()
-        assert json.loads(history_file.read_text(encoding="utf-8")) == [
-            "hello",
-            "world",
-        ]
+        raw = json.loads(history_file.read_text(encoding="utf-8"))
+        assert [e["text"] for e in raw] == ["hello", "world"]
+        assert all(e.get("pinned") is False for e in raw)
 
 
 def test_history_persisted_and_loaded():
@@ -236,7 +235,7 @@ def test_history_persisted_and_loaded():
         worker2 = WorkerThread(mgr)
         worker2._recorder = MagicMock()
         worker2._injector = MagicMock()
-        assert worker2._history == ["a", "b"]
+        assert [e["text"] for e in worker2._history] == ["a", "b"]
 
 
 def test_re_inject_not_in_history():
@@ -253,7 +252,7 @@ def test_re_inject_not_in_history():
         worker._injector = MagicMock()
         worker._inject("hello")
         worker._re_inject("hello")
-        assert worker._history == ["hello"]
+        assert [e["text"] for e in worker._history] == ["hello"]
 
 
 def test_reconfigure_hotkey_unregisters_old_and_registers_new():
@@ -421,7 +420,10 @@ def test_app_tray_event_handlers():
     app = VoiceTypeApp()
     app._worker = MagicMock()
     app._worker.isRunning.return_value = True
-    app._worker._history = ["line1", "line2"]
+    app._worker._history = [
+        {"text": "line1", "pinned": False, "created_at": "2026-09-04T00:00:00+00:00"},
+        {"text": "line2", "pinned": False, "created_at": "2026-09-04T00:00:01+00:00"},
+    ]
     app._tray = MagicMock()
 
     app._on_language_changed("thai")
@@ -434,8 +436,8 @@ def test_app_tray_event_handlers():
     app._worker.update_settings.assert_called_once()
 
     app._on_clear_history()
-    assert len(app._worker._history) == 0
-    app._tray.set_history.assert_called_once_with([])
+    app._worker.clear_history.assert_called_once_with(keep_pinned=True)
+    app._tray.set_history.assert_called_once_with(app._worker._history_texts.return_value)
 
 
 def test_app_on_test_microphone():

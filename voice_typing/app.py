@@ -324,23 +324,34 @@ class WorkerThread(QThread):
         self._last_injected = text
         self._injector.inject(text)
 
-    def _load_history(self) -> list[str]:
+    def _load_history(self) -> list[dict]:
+        from voice_typing.history import parse_history_list, trim_history
         try:
             if not self._history_path.exists():
                 return []
             loaded = json.loads(self._history_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, list):
-                return []
-            return [str(item) for item in loaded][-MAX_HISTORY:]
+            entries = parse_history_list(loaded)
+            return trim_history(entries)
         except (OSError, ValueError, UnicodeDecodeError):
             return []
 
+    def _history_texts(self) -> list[str]:
+        return [e["text"] for e in self._history]
+
     def _append_history(self, text: str) -> None:
-        if self._history and self._history[-1] == text:
+        from voice_typing.history import trim_history
+        if self._history and self._history[-1]["text"] == text:
             return
-        self._history.append(text)
-        if len(self._history) > MAX_HISTORY:
-            del self._history[:-MAX_HISTORY]
+        from datetime import UTC, datetime
+        self._history.append({
+            "text": text,
+            "pinned": False,
+            "created_at": datetime.now(UTC).isoformat(),
+        })
+        trim_history(self._history)
+        self._save_history()
+
+    def _save_history(self) -> None:
         try:
             self._history_path.parent.mkdir(parents=True, exist_ok=True)
             self._history_path.write_text(
@@ -349,7 +360,14 @@ class WorkerThread(QThread):
             )
         except OSError:
             pass
-        self._signals.history_changed.emit(list(self._history))
+        self._signals.history_changed.emit(self._history_texts())
+
+    def clear_history(self, keep_pinned: bool = True) -> None:
+        if keep_pinned:
+            self._history = [e for e in self._history if e.get("pinned")]
+        else:
+            self._history = []
+        self._save_history()
 
     def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
         try:
@@ -934,9 +952,10 @@ class VoiceTypeApp:
 
     def _on_clear_history(self) -> None:
         if self._worker is not None:
-            self._worker._history.clear()
-            self._worker._save_history()
-        self._tray.set_history([])
+            self._worker.clear_history(keep_pinned=True)
+            self._tray.set_history(self._worker._history_texts())
+        else:
+            self._tray.set_history([])
 
     def _open_settings(self) -> None:
         if self._settings_win is None:
