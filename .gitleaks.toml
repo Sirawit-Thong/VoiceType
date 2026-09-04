@@ -1,0 +1,5 @@
+# VoiceType gitleaks config — pins default ruleset so scans are deterministic.
+# Test fixtures use low-entropy synthetic keys (test-key-*, AIzaFake*, groq-key)
+# that trip no default rules; verified with `gitleaks detect` locally (123 commits, clean).
+[extend]
+useDefault = true
