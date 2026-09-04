@@ -76,6 +76,7 @@ class WorkerSignals(QObject):
     status = Signal(str)
     audio_level = Signal(float)
     history_changed = Signal(list)
+    preview_requested = Signal(str)
 
 
 class WorkerThread(QThread):
@@ -442,23 +443,22 @@ class WorkerThread(QThread):
             cleaned = text
         self._inject(cleaned.strip() or text if isinstance(cleaned, str) else text)
 
-    def _emit_final_text(self, text: str) -> None:
+    def _resolve_final_text(self, text: str) -> str | None:
         if not text.strip():
-            return
+            return None
         now = time.monotonic()
         if (
             self._last_injected_raw == text.strip()
             and now - self._last_inject_time < 0.5
         ):
-            return
+            return None
         self._last_injected_raw = text.strip()
         self._last_inject_time = now
         if self._cleanup_provider is not None:
             self._inject_with_cleanup(text)
-            return
+            return None
         if self._processor is None or self._loop is None:
-            self._inject(text)
-            return
+            return text
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -468,15 +468,30 @@ class WorkerThread(QThread):
             future.add_done_callback(
                 lambda f: self._inject_processed(f, text)
             )
-        else:
-            future = asyncio.run_coroutine_threadsafe(
-                self._processor.process(text), self._loop
-            )
-            try:
-                text = future.result(timeout=4)
-            except Exception:
-                pass
-            self._inject(text)
+            return None
+        future = asyncio.run_coroutine_threadsafe(
+            self._processor.process(text), self._loop
+        )
+        try:
+            text = future.result(timeout=4)
+        except Exception:
+            pass
+        return text
+
+    def _deliver_final_text(self, resolved: str) -> None:
+        if self._settings.get("preview_enabled", False):
+            self._signals.preview_requested.emit(resolved)
+            return
+        self._inject(resolved)
+
+    def _emit_final_text(self, text: str) -> None:
+        resolved = self._resolve_final_text(text)
+        if resolved is None:
+            return
+        self._deliver_final_text(resolved)
+
+    def _inject_from_preview(self, final: str) -> None:
+        self._inject(final)
 
     def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:

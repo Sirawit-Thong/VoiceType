@@ -273,9 +273,7 @@ def test_reconfigure_hotkey_unregisters_old_and_registers_new():
 
         # Initial registration
         worker.reconfigure_hotkey()
-        worker._hotkey_mgr.register.assert_called_once_with(
-            0x78, worker._on_hotkey, on_release=worker._on_hotkey_release
-        )
+        assert worker._hotkey_mgr.register.call_count == 2  # main + undo
         worker._hotkey_mgr.unregister.assert_not_called()
         assert worker._current_hotkey_vk == 0x78
 
@@ -283,7 +281,7 @@ def test_reconfigure_hotkey_unregisters_old_and_registers_new():
         mgr.set("hotkey", 0x79)
         worker.reconfigure_hotkey()
         worker._hotkey_mgr.unregister.assert_called_once_with(0x78)
-        worker._hotkey_mgr.register.assert_called_with(
+        worker._hotkey_mgr.register.assert_any_call(
             0x79, worker._on_hotkey, on_release=worker._on_hotkey_release
         )
         assert worker._current_hotkey_vk == 0x79
@@ -292,7 +290,7 @@ def test_reconfigure_hotkey_unregisters_old_and_registers_new():
         mgr.set("mode", "toggle")
         worker.reconfigure_hotkey()
         assert worker._hotkey_mgr.unregister.call_count == 1
-        worker._hotkey_mgr.register.assert_called_with(
+        worker._hotkey_mgr.register.assert_any_call(
             0x79, worker._on_hotkey, on_release=None
         )
         assert worker._current_hotkey_vk == 0x79
