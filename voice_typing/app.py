@@ -495,10 +495,7 @@ class WorkerThread(QThread):
             cleaned = future.result()
         except Exception:
             cleaned = raw
-        if not isinstance(cleaned, str) or not cleaned.strip():
-            cleaned = raw
-        else:
-            cleaned = cleaned.strip()
+        cleaned = raw if not isinstance(cleaned, str) or not cleaned.strip() else cleaned.strip()
         self._inject(cleaned or raw)
 
     def _inject_with_cleanup_async(self, text: str) -> bool:
