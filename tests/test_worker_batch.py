@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from voice_typing.app import WorkerThread
 from voice_typing.config.settings import SettingsManager
@@ -117,4 +117,51 @@ def test_batch_release_reroutes_hotkey_release(tmp_path):
     worker._pcm_buffer.extend(array.array("h", [1000] * 160).tobytes())
     worker._on_hotkey_release(0x78)
     worker._injector.inject.assert_called_once_with("hello batch")
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+class _FakeCleanupForBatch:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def cleanup(self, text, vocabulary=""):
+        self.calls.append((text, vocabulary))
+        return self.result
+
+
+def _batch_worker_with_cleanup(tmp_path, cleanup):
+    worker = _batch_worker(tmp_path)
+    worker._cleanup_provider = cleanup
+    return worker
+
+
+def test_batch_final_with_cleanup_injects_cleaned_once(tmp_path):
+    cleanup = _FakeCleanupForBatch("Hello, batch.")
+    worker = _batch_worker_with_cleanup(tmp_path, cleanup)
+    worker._on_final("hello batch")
+    worker._injector.inject.assert_called_once_with("Hello, batch.")
+    assert cleanup.calls == [("hello batch", "")]
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def test_batch_duplicate_within_half_second_injects_once(tmp_path):
+    cleanup = _FakeCleanupForBatch("Hello, batch.")
+    worker = _batch_worker_with_cleanup(tmp_path, cleanup)
+    worker._on_final("hello batch")
+    worker._on_final("hello batch")
+    worker._injector.inject.assert_called_once_with("Hello, batch.")
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def test_batch_final_without_cleanup_routes_through_processor(tmp_path):
+    worker = _batch_worker(tmp_path)
+    worker._cleanup_provider = None
+    fake_processor = MagicMock()
+    fake_future = MagicMock()
+    fake_future.result.return_value = "PROCESSED batch"
+    with patch("asyncio.run_coroutine_threadsafe", return_value=fake_future):
+        worker._processor = fake_processor
+        worker._on_final("hello batch")
+    worker._injector.inject.assert_called_once_with("PROCESSED batch")
     worker._loop.call_soon_threadsafe(worker._loop.stop)
