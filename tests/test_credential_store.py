@@ -90,6 +90,7 @@ def test_probe_caches_result(monkeypatch):
     assert cs.is_secure_backend_available() is True
     # Break the backend after caching: cached True must survive.
     monkeypatch.delitem(sys.modules, "keyring")
+    monkeypatch.setitem(sys.modules, "keyring", None)
     assert cs.is_secure_backend_available() is True
     cs.refresh_backend_cache()
     assert cs.is_secure_backend_available() is False
