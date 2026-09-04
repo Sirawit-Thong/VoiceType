@@ -6,7 +6,7 @@ import ctypes.wintypes as wintypes
 import logging
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -212,10 +212,9 @@ class HotkeyManager:
         self._started.set()
 
         for vk in list(self._hotkeys.keys()):
-            if vk not in MOUSE_VKS:
-                if user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
-                    self._registration_failures.append(vk)
-                    logging.warning("Failed to register hotkey VK=0x%X", vk)
+            if vk not in MOUSE_VKS and user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
+                self._registration_failures.append(vk)
+                logging.warning("Failed to register hotkey VK=0x%X", vk)
         msg = wintypes.MSG()
         while self._running:
             result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)

@@ -1,5 +1,4 @@
 # tests/test_provider_contracts.py
-import pytest
 
 from voice_typing.providers.contracts import (
     ErrorCategory,
@@ -7,7 +6,6 @@ from voice_typing.providers.contracts import (
     ProviderCapabilities,
     ProviderConfigurationError,
     ProviderError,
-    ProviderProfile,
     TranscriptEvent,
     build_profile,
 )

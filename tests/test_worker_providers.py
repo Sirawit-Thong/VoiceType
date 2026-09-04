@@ -1,13 +1,13 @@
 # tests/test_worker_providers.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtWidgets import QApplication
-from unittest.mock import MagicMock
 
 from voice_typing.app import WorkerThread
 
@@ -24,7 +24,11 @@ def _disable_vault_backend(monkeypatch):
 
 
 from voice_typing.config.settings import SettingsManager
-from voice_typing.providers.contracts import ProviderCapabilities, ProviderProfile, TranscriptEvent
+from voice_typing.providers.contracts import (
+    ProviderCapabilities,
+    ProviderProfile,
+    TranscriptEvent,
+)
 
 
 @pytest.fixture(scope="module", autouse=True)

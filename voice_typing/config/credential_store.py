@@ -243,10 +243,9 @@ def migrate_plaintext_keys(settings_data: dict[str, Any]) -> list[str]:
         return []
     if not isinstance(legacy, str):
         legacy = ""
-    if legacy:
-        if set_api_key("gemini_live", legacy):
-            settings_data["api_key"] = ""
-            migrated.append("gemini_live")
+    if legacy and set_api_key("gemini_live", legacy):
+        settings_data["api_key"] = ""
+        migrated.append("gemini_live")
     profiles = settings_data.get("provider_profiles")
     if not isinstance(profiles, dict):
         return migrated

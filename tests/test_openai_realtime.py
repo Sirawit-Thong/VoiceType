@@ -1,12 +1,19 @@
 # tests/test_openai_realtime.py
-import asyncio
 import base64
 import json
 
 import pytest
 
-from voice_typing.providers.contracts import ErrorCategory, EventKind, ProviderProfile, TranscriptEvent
-from voice_typing.providers.openai_realtime import OPENAI_REALTIME_URL, OpenAIRealtimeAdapter
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    EventKind,
+    ProviderProfile,
+    TranscriptEvent,
+)
+from voice_typing.providers.openai_realtime import (
+    OPENAI_REALTIME_URL,
+    OpenAIRealtimeAdapter,
+)
 
 FAKE_KEY = "sk-fake-test-key-0123456789abcdefghij"
 
@@ -22,7 +29,7 @@ class FakeWS:
 
     async def recv(self):
         if not self.incoming:
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return self.incoming.pop(0)
 
     async def close(self):

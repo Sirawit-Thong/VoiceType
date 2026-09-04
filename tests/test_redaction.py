@@ -1,5 +1,10 @@
 # tests/test_redaction.py
-from voice_typing.providers.redaction import redact_headers, redact_text, redact_url, safe_error
+from voice_typing.providers.redaction import (
+    redact_headers,
+    redact_text,
+    redact_url,
+    safe_error,
+)
 
 GOOGLE_KEY = "AIzaFakeTestKey0123456789abcdef"
 OPENAI_KEY = "sk-fake-test-key-0123456789abcdefghij"

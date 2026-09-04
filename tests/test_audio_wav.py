@@ -4,7 +4,13 @@ import wave
 
 import pytest
 
-from voice_typing.providers.audio import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH_BYTES, pcm_to_wav_bytes, wav_duration_sec
+from voice_typing.providers.audio import (
+    CHANNELS,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH_BYTES,
+    pcm_to_wav_bytes,
+    wav_duration_sec,
+)
 
 
 def test_pcm_to_wav_bytes_produces_valid_wav():

@@ -1,5 +1,5 @@
-from unittest.mock import MagicMock, call, patch
 import time
+from unittest.mock import call, patch
 
 from voice_typing.windows.text_injector import (
     KEYEVENTF_KEYUP,

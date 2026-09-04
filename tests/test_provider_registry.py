@@ -8,7 +8,12 @@ from voice_typing.providers.contracts import (
     ProviderProfile,
 )
 from voice_typing.providers.presets import PROVIDER_ORDER, PROVIDER_PRESETS
-from voice_typing.providers.registry import ProviderRegistry, build_default_registry, create_provider, supports_dictation
+from voice_typing.providers.registry import (
+    ProviderRegistry,
+    build_default_registry,
+    create_provider,
+    supports_dictation,
+)
 
 
 def test_presets_cover_all_six_provider_ids():

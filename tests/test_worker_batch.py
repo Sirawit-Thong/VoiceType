@@ -1,19 +1,23 @@
 # tests/test_worker_batch.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import array
 import asyncio
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtWidgets import QApplication
-from unittest.mock import MagicMock, patch
 
 from voice_typing.app import WorkerThread
 from voice_typing.config.settings import SettingsManager
-from voice_typing.providers.contracts import ProviderCapabilities, ProviderProfile, TranscriptEvent
+from voice_typing.providers.contracts import (
+    ProviderCapabilities,
+    TranscriptEvent,
+)
 
 
 @pytest.fixture(scope="module", autouse=True)

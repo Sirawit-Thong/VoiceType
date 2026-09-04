@@ -7,7 +7,8 @@ so contract tests run against fakes.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
@@ -32,13 +33,14 @@ async def _default_post(
 ) -> tuple[int, dict[str, Any]]:
     connector = None if verify_tls else aiohttp.TCPConnector(ssl=False)
     timeout = aiohttp.ClientTimeout(total=timeout_sec)
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        async with session.post(url, headers=headers, data=form) as resp:
-            try:
-                payload = await resp.json()
-            except Exception:
-                payload = {}
-            return resp.status, payload if isinstance(payload, dict) else {}
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session, session.post(
+        url, headers=headers, data=form
+    ) as resp:
+        try:
+            payload = await resp.json()
+        except Exception:
+            payload = {}
+        return resp.status, payload if isinstance(payload, dict) else {}
 
 
 class OpenAIBatchAdapter(SpeechProvider):

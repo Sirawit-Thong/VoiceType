@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import quote
 
 import websockets
@@ -112,24 +113,24 @@ class OpenAIRealtimeAdapter(SpeechProvider):
 
     async def send_audio(self, pcm: bytes) -> None:
         if self._delegate is not None:
-            return None
+            return
         if self._ws is None:
-            return None
+            return
         await self._ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": base64.b64encode(pcm).decode("ascii")}))
 
     async def pump(self) -> None:
         if self._delegate is not None or self._ws is None:
-            return None
+            return
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
-        except asyncio.TimeoutError:
-            return None
+        except TimeoutError:
+            return
         try:
             message = json.loads(raw)
         except ValueError:
-            return None
+            return
         if not isinstance(message, dict):
-            return None
+            return
         mtype = str(message.get("type", ""))
         if mtype.endswith("transcription.delta"):
             delta = str(message.get("delta", ""))
@@ -154,7 +155,7 @@ class OpenAIRealtimeAdapter(SpeechProvider):
             else:
                 category = ErrorCategory.SERVER
             self._on_event(TranscriptEvent.failure(ProviderError(category, f"OpenAI Realtime error: {text}", False)))
-        return None
+        return
 
     async def finish_turn(self, wav_bytes: bytes | None = None) -> TranscriptEvent | None:
         if self._delegate is not None:

@@ -1,8 +1,6 @@
 # voice_typing/ui/tray.py
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import (
     QAction,
@@ -14,6 +12,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+
 from voice_typing.config.settings import get_asset_path
 
 
@@ -144,10 +143,7 @@ class TrayIcon:
         history_menu = self._menu.addMenu("ล่าสุด (Recent)")
         if self._history:
             for full_text in reversed(self._history[-10:]):
-                if len(full_text) > 35:
-                    label = full_text[:35].rstrip() + "…"
-                else:
-                    label = full_text
+                label = full_text[:35].rstrip() + "…" if len(full_text) > 35 else full_text
                 item = QAction(label, history_menu)
                 item.setToolTip(full_text)
                 item.triggered.connect(
@@ -170,7 +166,7 @@ class TrayIcon:
 
         test_action = QAction("Test Microphone", self._menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
-        menu_items = self._menu.addAction(test_action)
+        self._menu.addAction(test_action)
 
         self._menu.addSeparator()
         exit_action = QAction("Exit", self._menu)
@@ -225,10 +221,9 @@ class TrayIcon:
             QSystemTrayIcon.ActivationReason.DoubleClick,
         ):
             self.signals.show_status_bar.emit()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            if self._menu is not None:
-                self._build_menu()
-                self._menu.popup(QCursor.pos())
+        elif reason == QSystemTrayIcon.ActivationReason.Context and self._menu is not None:
+            self._build_menu()
+            self._menu.popup(QCursor.pos())
 
     def hide(self) -> None:
         if self._tray is not None:

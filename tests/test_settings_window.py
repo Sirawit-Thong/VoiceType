@@ -1,18 +1,18 @@
 # tests/test_settings_window.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import time
-from pathlib import Path
-import pytest
 from unittest.mock import MagicMock, patch
+
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, QTimer
+import pytest
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager
-from voice_typing.ui.settings_window import SettingsWindow, _LiveMicTester, _normalize_model
+from voice_typing.ui.settings_window import SettingsWindow, _LiveMicTester
 
 
 @pytest.fixture(autouse=True)
@@ -169,8 +169,8 @@ def test_settings_window_key_capture_timeout(settings):
 
 
 def test_settings_window_mouse_capture_middle_button(settings):
-    from PySide6.QtGui import QMouseEvent
     from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
 
     win = SettingsWindow(settings)
     win._start_key_capture()
@@ -190,8 +190,8 @@ def test_settings_window_mouse_capture_middle_button(settings):
 
 
 def test_settings_window_mouse_capture_xbutton1(settings):
-    from PySide6.QtGui import QMouseEvent
     from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
 
     win = SettingsWindow(settings)
     win._start_key_capture()
@@ -290,7 +290,7 @@ def test_settings_window_reset_to_defaults(settings):
 
 def test_settings_window_test_beep(settings):
     win = SettingsWindow(settings)
-    with patch("winsound.Beep", create=True) as mock_beep, \
+    with patch("winsound.Beep", create=True), \
          patch("threading.Thread") as mock_thread:
         mock_instance = MagicMock()
         mock_thread.return_value = mock_instance
@@ -342,7 +342,7 @@ def test_live_mic_tester_thread():
                 return self
             def __exit__(self, exc_type, exc_val, exc_tb):
                 pass
-        
+
         def fake_stream(*args, **kwargs):
             cb = kwargs.get("callback")
             if cb:

@@ -106,11 +106,7 @@ class TextInjector:
         self.typing_speed = typing_speed
 
     def inject(self, text: str, typing_speed: float | None = None) -> bool:
-        if self._clipboard_inject(text):
-            return True
-        if self._sendinput_inject(text, typing_speed=typing_speed):
-            return True
-        return False
+        return self._clipboard_inject(text) or self._sendinput_inject(text, typing_speed=typing_speed)
 
     def _restore_clipboard_async(
         self, text: str, delay: float = 0.2

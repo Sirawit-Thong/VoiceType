@@ -1,9 +1,11 @@
 # tests/test_setup_wizard.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from voice_typing.app import VoiceTypeApp

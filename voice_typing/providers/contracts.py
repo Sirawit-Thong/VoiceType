@@ -11,12 +11,13 @@ TranscriptEvent from finish_turn(wav_bytes) without emitting via callback.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 
-class ErrorCategory(str, Enum):
+class ErrorCategory(str, Enum):  # noqa: UP042 — str()-format stability relied on by tests/logs
     AUTHENTICATION = "authentication"
     NETWORK = "network"
     RATE_LIMIT = "rate_limit"
@@ -28,7 +29,7 @@ class ErrorCategory(str, Enum):
 RETRYABLE_CATEGORIES = frozenset({ErrorCategory.NETWORK, ErrorCategory.SERVER, ErrorCategory.RATE_LIMIT})
 
 
-class EventKind(str, Enum):
+class EventKind(str, Enum):  # noqa: UP042 — str()-format stability relied on by tests/logs
     PARTIAL = "partial"
     FINAL = "final"
     STATUS = "status"

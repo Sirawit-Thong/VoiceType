@@ -1,11 +1,18 @@
 # tests/test_deepgram_adapter.py
-import asyncio
 import json
 
 import pytest
 
-from voice_typing.providers.contracts import ErrorCategory, EventKind, ProviderProfile, TranscriptEvent
-from voice_typing.providers.deepgram_adapter import DEEPGRAM_LISTEN_URL, DeepgramStreamingAdapter
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    EventKind,
+    ProviderProfile,
+    TranscriptEvent,
+)
+from voice_typing.providers.deepgram_adapter import (
+    DEEPGRAM_LISTEN_URL,
+    DeepgramStreamingAdapter,
+)
 
 FAKE_KEY = "dg_fake_test_key_0123456789abcdef"
 
@@ -25,7 +32,7 @@ class FakeWS:
 
     async def recv(self):
         if not self.incoming:
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return self.incoming.pop(0)
 
     async def close(self):

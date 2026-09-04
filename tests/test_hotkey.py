@@ -1,13 +1,10 @@
 from unittest.mock import MagicMock, patch
-import threading
-import time
 
 from voice_typing.windows.hotkey import (
-    HotkeyManager,
-    WM_HOTKEY,
     WM_QUIT,
     WM_REGISTER,
     WM_UNREGISTER,
+    HotkeyManager,
     hotkey_name,
 )
 
@@ -235,7 +232,7 @@ def test_mouse_polling_dispatching():
         # Pressed
         mock_state.side_effect = lambda vk: 0x8000 if vk == VK_MBUTTON else 0
         mgr._running = True
-        
+
         # Run one iteration of polling logic
         for vk in list(mgr._hotkeys.keys()):
             is_down = bool(mock_state(vk) & 0x8000)
@@ -243,7 +240,8 @@ def test_mouse_polling_dispatching():
             if is_down and not was_down:
                 mgr._mouse_pressed[vk] = True
                 cb = mgr._hotkeys.get(vk)
-                if cb: cb(vk)
+                if cb:
+                    cb(vk)
 
         m_cb.assert_called_once_with(VK_MBUTTON)
         assert mgr._mouse_pressed[VK_MBUTTON] is True
@@ -256,7 +254,8 @@ def test_mouse_polling_dispatching():
             if not is_down and was_down:
                 mgr._mouse_pressed[vk] = False
                 rel = mgr._release_callbacks.get(vk)
-                if rel: rel(vk)
+                if rel:
+                    rel(vk)
 
         m_rel.assert_called_once_with(VK_MBUTTON)
         assert mgr._mouse_pressed[VK_MBUTTON] is False

@@ -1,8 +1,7 @@
 # voice_typing/ui/status_bar.py
 from __future__ import annotations
 
-import math
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
 from voice_typing.config.settings import get_asset_path
 
 

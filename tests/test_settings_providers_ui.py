@@ -1,9 +1,11 @@
 # tests/test_settings_providers_ui.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from voice_typing.config.settings import SettingsManager

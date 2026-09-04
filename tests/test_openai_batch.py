@@ -3,7 +3,11 @@ import pytest
 
 from voice_typing.providers.audio import pcm_to_wav_bytes
 from voice_typing.providers.contracts import ErrorCategory, EventKind, ProviderProfile
-from voice_typing.providers.openai_batch import GroqBatchAdapter, OpenAIBatchAdapter, OpenAITranscriptionAdapter
+from voice_typing.providers.openai_batch import (
+    GroqBatchAdapter,
+    OpenAIBatchAdapter,
+    OpenAITranscriptionAdapter,
+)
 
 
 class FakeHTTP:

@@ -1,14 +1,15 @@
 # tests/test_worker_cleanup.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import asyncio
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtWidgets import QApplication
-from unittest.mock import MagicMock
 
 from voice_typing.app import WorkerThread
 from voice_typing.config.settings import SettingsManager

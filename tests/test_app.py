@@ -1,5 +1,6 @@
 # tests/test_app.py
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
@@ -25,20 +26,15 @@ def qapp():
 
 
 def test_imports():
-    from voice_typing.config.settings import SettingsManager
-    from voice_typing.audio.recorder import AudioRecorder
-    from voice_typing.speech.engine import TranscriptBuffer
-    from voice_typing.windows.text_injector import TextInjector
-    from voice_typing.windows.hotkey import HotkeyManager
-    from voice_typing.speech.gemini_live import GeminiLiveClient
     assert True
 
 
 def test_full_flow_mock():
+    import tempfile
+    from pathlib import Path
+
     from voice_typing.config.settings import SettingsManager
     from voice_typing.speech.engine import TranscriptBuffer
-    from pathlib import Path
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         mgr = SettingsManager(Path(tmp) / "settings.json")
@@ -54,12 +50,13 @@ def test_full_flow_mock():
 
 
 def test_stop_recording_on_connection_lost():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
     from voice_typing.speech.engine import TranscriptBuffer
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -74,11 +71,12 @@ def test_stop_recording_on_connection_lost():
 
 
 def test_connection_lost_no_double_stop():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -91,11 +89,12 @@ def test_connection_lost_no_double_stop():
 
 
 def test_two_utterances_no_doubling():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -111,11 +110,12 @@ def test_two_utterances_no_doubling():
 
 
 def test_no_duplicate_injection_on_repeated_end_of_turn():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -130,11 +130,12 @@ def test_no_duplicate_injection_on_repeated_end_of_turn():
 
 
 def test_same_text_after_interval_is_injected_again():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -150,12 +151,13 @@ def test_same_text_after_interval_is_injected_again():
 
 
 def test_audio_level_emitted():
+    import array
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    import array
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -172,12 +174,13 @@ def test_audio_level_emitted():
 
 
 def test_audio_level_silent_emits_zero():
+    import array
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    import array
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -191,12 +194,13 @@ def test_audio_level_silent_emits_zero():
 
 
 def test_history_appends_and_dedupes():
+    import json
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    import json
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -215,11 +219,12 @@ def test_history_appends_and_dedupes():
 
 
 def test_history_persisted_and_loaded():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         mgr = SettingsManager(Path(tmp) / "s.json")
@@ -235,11 +240,12 @@ def test_history_persisted_and_loaded():
 
 
 def test_re_inject_not_in_history():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -251,11 +257,12 @@ def test_re_inject_not_in_history():
 
 
 def test_reconfigure_hotkey_unregisters_old_and_registers_new():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         mgr = SettingsManager(Path(tmp) / "s.json")
@@ -293,11 +300,12 @@ def test_reconfigure_hotkey_unregisters_old_and_registers_new():
 
 
 def test_repeated_utterance_short_debounce_window():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -329,12 +337,13 @@ def test_repeated_utterance_short_debounce_window():
 
 
 def test_worker_update_settings():
-    from voice_typing.app import WorkerThread
-    from voice_typing.ai.text_processor import TextProcessor
-    from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
     import tempfile
+    from pathlib import Path
     from unittest.mock import MagicMock
+
+    from voice_typing.ai.text_processor import TextProcessor
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
 
     with tempfile.TemporaryDirectory() as tmp:
         mgr = SettingsManager(Path(tmp) / "s.json")
@@ -379,8 +388,9 @@ def test_worker_update_settings():
 
 
 def test_app_on_settings_saved():
-    from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
+
+    from voice_typing.app import VoiceTypeApp
 
     with patch("voice_typing.app.set_startup") as mock_set_startup:
         app = VoiceTypeApp()
@@ -404,8 +414,9 @@ def test_app_on_settings_saved():
 
 
 def test_app_tray_event_handlers():
-    from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock
+
+    from voice_typing.app import VoiceTypeApp
 
     app = VoiceTypeApp()
     app._worker = MagicMock()
@@ -428,8 +439,9 @@ def test_app_tray_event_handlers():
 
 
 def test_app_on_test_microphone():
-    from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
+
+    from voice_typing.app import VoiceTypeApp
 
     app = VoiceTypeApp()
     with patch("voice_typing.app._MicTester") as mock_mic_tester_cls:
@@ -448,8 +460,9 @@ def test_app_on_test_microphone():
 
 
 def test_app_on_mic_test_result():
+    from unittest.mock import patch
+
     from voice_typing.app import VoiceTypeApp
-    from unittest.mock import MagicMock, patch
 
     with patch("voice_typing.app.QMessageBox") as mock_msgbox:
         app = VoiceTypeApp()
@@ -462,8 +475,8 @@ def test_app_on_mic_test_result():
 
 
 def test_settings_window_normalize_model():
-    from voice_typing.ui.settings_window import _normalize_model
     from voice_typing.speech.gemini_live import MODEL
+    from voice_typing.ui.settings_window import _normalize_model
 
     assert _normalize_model("gemini-2.0-flash") == "models/gemini-2.0-flash"
     assert _normalize_model("models/gemini-2.0-flash") == "models/gemini-2.0-flash"
@@ -473,8 +486,8 @@ def test_settings_window_normalize_model():
 
 
 def test_settings_window_open_and_save(tmp_path):
-    from voice_typing.ui.settings_window import SettingsWindow
     from voice_typing.config.settings import SettingsManager
+    from voice_typing.ui.settings_window import SettingsWindow
 
     mgr = SettingsManager(tmp_path / "settings.json")
     mgr.load()
@@ -488,11 +501,12 @@ def test_settings_window_open_and_save(tmp_path):
 
 
 def test_worker_thread_stop():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
     from voice_typing.app import WorkerThread
     from voice_typing.config.settings import SettingsManager
-    from pathlib import Path
-    import tempfile
-    from unittest.mock import MagicMock
 
     with tempfile.TemporaryDirectory() as tmp:
         worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
@@ -514,8 +528,9 @@ def test_worker_thread_stop():
 
 
 def test_app_exit_clean_shutdown():
-    from voice_typing.app import VoiceTypeApp, _release_single_instance
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
+
+    from voice_typing.app import VoiceTypeApp
 
     app = VoiceTypeApp()
     app._worker = MagicMock()
@@ -541,8 +556,9 @@ def test_app_exit_clean_shutdown():
 
 
 def test_app_opacity_propagated_on_settings_saved():
-    from voice_typing.app import VoiceTypeApp
     from unittest.mock import MagicMock, patch
+
+    from voice_typing.app import VoiceTypeApp
 
     app = VoiceTypeApp()
     app._status_bar = MagicMock()

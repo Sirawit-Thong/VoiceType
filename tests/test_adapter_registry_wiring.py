@@ -1,7 +1,16 @@
 # tests/test_adapter_registry_wiring.py
-from voice_typing.providers.contracts import ErrorCategory, ProviderConfigurationError, ProviderProfile, build_profile
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    ProviderConfigurationError,
+    ProviderProfile,
+    build_profile,
+)
 from voice_typing.providers.presets import PROVIDER_PRESETS
-from voice_typing.providers.registry import build_default_registry, create_provider, supports_dictation
+from voice_typing.providers.registry import (
+    build_default_registry,
+    create_provider,
+    supports_dictation,
+)
 
 
 def test_all_presets_are_registered():

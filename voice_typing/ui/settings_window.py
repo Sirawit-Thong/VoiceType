@@ -1,10 +1,8 @@
 # voice_typing/ui/settings_window.py
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, QTimer, QUrl
-from PySide6.QtGui import QCursor, QDesktopServices, QIcon, QPixmap
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,17 +17,22 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSlider,
-    QSpacerItem,
-    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from voice_typing.audio.recorder import list_input_devices
-from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, get_asset_path
+from voice_typing.config.settings import (
+    DEFAULT_SETTINGS,
+    SettingsManager,
+    get_asset_path,
+)
 from voice_typing.providers.contracts import build_profile
-from voice_typing.providers.presets import PROVIDER_ORDER, PROVIDER_PRESETS, ProviderPreset
+from voice_typing.providers.presets import (
+    PROVIDER_ORDER,
+    PROVIDER_PRESETS,
+)
 from voice_typing.providers.redaction import redact_text
 from voice_typing.providers.registry import build_default_registry
 from voice_typing.speech.gemini_live import MODEL
@@ -117,6 +120,7 @@ class _LiveMicTester(QThread):
 
     def run(self) -> None:
         import time
+
         import numpy as np
         import sounddevice as sd
 
@@ -127,10 +131,7 @@ class _LiveMicTester(QThread):
         def callback(indata, frames, time_info, status):
             if not self._running:
                 return
-            if indata.dtype == np.int16:
-                samples = indata.astype(np.float32) / 32768.0
-            else:
-                samples = indata.astype(np.float32)
+            samples = indata.astype(np.float32) / 32768.0 if indata.dtype == np.int16 else indata.astype(np.float32)
             peak = float(np.max(np.abs(samples))) if len(samples) > 0 else 0.0
             level = int(min(100, max(0, peak * 100)))
             self.level_changed.emit(level)
@@ -417,7 +418,7 @@ class SettingsWindow(QDialog):
         self._api_status = QLabel("●")
         self._api_status.setObjectName("api_status")
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
-        
+
         self._test_key_btn = QPushButton("Test Key")
         self._test_key_btn.clicked.connect(self._test_api_key)
 
@@ -1094,7 +1095,7 @@ class SettingsWindow(QDialog):
         if isinstance(prev_cleanup, dict):
             prev_id = str(prev_cleanup.get("provider_id", "") or "").strip()
         enabled = not self._fast_mode.isChecked()
-        if prev_id and prev_id in PROVIDER_PRESETS:
+        if prev_id and prev_id in PROVIDER_PRESETS:  # noqa: SIM108 — nested fallback reads clearer as if/else
             resolved_id = prev_id
         else:
             resolved_id = provider_id if enabled else ""
@@ -1102,7 +1103,7 @@ class SettingsWindow(QDialog):
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
-        
+
         self._settings.save()
         self.saved.emit()
         self.close()

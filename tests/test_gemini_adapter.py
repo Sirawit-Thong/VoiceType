@@ -4,8 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from voice_typing.providers.contracts import ErrorCategory, EventKind, ProviderProfile, TranscriptEvent
-from voice_typing.providers.gemini_adapter import GEMINI_DEFAULT_MODEL, GeminiStreamingAdapter
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    EventKind,
+    ProviderProfile,
+    TranscriptEvent,
+)
+from voice_typing.providers.gemini_adapter import (
+    GEMINI_DEFAULT_MODEL,
+    GeminiStreamingAdapter,
+)
 
 FAKE_KEY = "AIzaFakeTestKey0123456789abcdef"
 

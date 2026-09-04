@@ -12,16 +12,18 @@ import winsound
 from array import array
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, QObject
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
-from voice_typing.speech.engine import TranscriptBuffer
-from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.providers.audio import pcm_to_wav_bytes
+from voice_typing.providers.cleanup import (
+    GeminiCleanupProvider,
+    OpenAIChatCleanupProvider,
+)
 from voice_typing.providers.contracts import (
     ErrorCategory,
     EventKind,
@@ -31,10 +33,10 @@ from voice_typing.providers.contracts import (
     TranscriptEvent,
     build_profile,
 )
-from voice_typing.providers.redaction import redact_text
-from voice_typing.providers.cleanup import GeminiCleanupProvider, OpenAIChatCleanupProvider
 from voice_typing.providers.presets import PROVIDER_PRESETS
+from voice_typing.providers.redaction import redact_text
 from voice_typing.providers.registry import Factory, default_factory
+from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
@@ -1097,7 +1099,7 @@ class VoiceTypeApp:
                 os._exit(0)
 
 
-def main() -> int:
+def main() -> int:  # noqa: RET503 — os._exit() never returns; no fall-through path exists
     if not _acquire_single_instance():
         app = QApplication(sys.argv)
         QMessageBox.warning(

@@ -2,7 +2,7 @@
 plus tests plus a single register() line in build_default_registry()."""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from voice_typing.providers.contracts import (
     ErrorCategory,

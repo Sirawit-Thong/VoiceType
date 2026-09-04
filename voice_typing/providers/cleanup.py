@@ -3,12 +3,13 @@ any failure returns the raw transcription so text is injected exactly once.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
 
-from voice_typing.providers.contracts import TextCleanupProvider
 from voice_typing.ai.text_processor import TextProcessor
+from voice_typing.providers.contracts import TextCleanupProvider
 
 
 def build_cleanup_prompt(text: str, vocabulary: str = "") -> str:
@@ -49,13 +50,14 @@ async def _default_json_post(
 ) -> tuple[int, dict[str, Any]]:
     connector = None if verify_tls else aiohttp.TCPConnector(ssl=False)
     timeout = aiohttp.ClientTimeout(total=timeout_sec)
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
-            try:
-                data = await resp.json()
-            except Exception:
-                data = {}
-            return resp.status, data if isinstance(data, dict) else {}
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session, session.post(
+        url, headers=headers, json=payload
+    ) as resp:
+        try:
+            data = await resp.json()
+        except Exception:
+            data = {}
+        return resp.status, data if isinstance(data, dict) else {}
 
 
 class OpenAIChatCleanupProvider(TextCleanupProvider):

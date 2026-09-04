@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlencode
 
 import websockets
@@ -87,28 +88,28 @@ class DeepgramStreamingAdapter(SpeechProvider):
 
     async def send_audio(self, pcm: bytes) -> None:
         if self._ws is None:
-            return None
+            return
         await self._ws.send(pcm)
 
     async def pump(self) -> None:
         if self._ws is None:
-            return None
+            return
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
-        except asyncio.TimeoutError:
-            return None
+        except TimeoutError:
+            return
         try:
             message = json.loads(raw)
         except ValueError:
-            return None
+            return
         if not isinstance(message, dict):
-            return None
+            return
         mtype = str(message.get("type", ""))
         if mtype == "Results":
             alternatives = message.get("channel", {}).get("alternatives", [{}])
             transcript = str((alternatives[0] or {}).get("transcript", ""))
             if not transcript:
-                return None
+                return
             if message.get("is_final"):
                 self._on_event(TranscriptEvent.final(transcript))
             else:
@@ -123,7 +124,7 @@ class DeepgramStreamingAdapter(SpeechProvider):
             else:
                 category = ErrorCategory.SERVER
             self._on_event(TranscriptEvent.failure(ProviderError(category, f"Deepgram error: {detail}", False)))
-        return None
+        return
 
     async def finish_turn(self, wav_bytes: bytes | None = None) -> TranscriptEvent | None:
         return None

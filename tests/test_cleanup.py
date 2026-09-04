@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from voice_typing.providers.cleanup import GeminiCleanupProvider, OpenAIChatCleanupProvider
+from voice_typing.providers.cleanup import (
+    GeminiCleanupProvider,
+    OpenAIChatCleanupProvider,
+)
 
 
 @pytest.mark.asyncio

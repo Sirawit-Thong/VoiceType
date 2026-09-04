@@ -6,7 +6,7 @@ to logs passes through redact_text first.
 from __future__ import annotations
 
 import re
-from typing import Mapping
+from collections.abc import Mapping
 
 REDACTED = "***REDACTED***"
 
@@ -26,8 +26,7 @@ def redact_text(message: str) -> str:
     out = _TOKEN_ASSIGN_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + REDACTED, out)
     out = _GOOGLE_KEY_RE.sub(REDACTED, out)
     out = _SK_KEY_RE.sub("sk-" + REDACTED, out)
-    out = _DEEPGRAM_KEY_RE.sub(REDACTED, out)
-    return out
+    return _DEEPGRAM_KEY_RE.sub(REDACTED, out)
 
 
 def redact_url(url: str) -> str:

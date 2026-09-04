@@ -7,6 +7,7 @@ provider. All secrets are synthetic placeholders. A dict-backed fake
 never touched.
 """
 import os
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import sys
@@ -409,7 +410,7 @@ def test_dialog_fallback_banner_visible_without_backend(monkeypatch, tmp_path):
     cs.refresh_backend_cache()
     _app, _mgr, win = _make_dialog(tmp_path)
     win._populate_ui_from_settings()
-    assert not win._cred_banner.isHidden() or not win._cred_banner.text() == ""
+    assert not win._cred_banner.isHidden() or win._cred_banner.text() != ""
     assert "plaintext" in win._cred_banner.text()
     assert not win._cred_retry_btn.isHidden() or not win._cred_btn_widget.isHidden()
     win.close()
