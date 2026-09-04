@@ -1,7 +1,27 @@
 # tests/test_settings_migration.py
 import json
 
+import pytest
+
 from voice_typing.config.settings import SettingsManager
+
+
+@pytest.fixture(autouse=True)
+def _disable_vault_backend(monkeypatch):
+    """Force fallback mode so these plaintext tests ignore any live OS vault.
+
+    On machines with a usable Windows Credential Manager backend,
+    SettingsManager.load() would otherwise migrate the fixture keys into
+    the real vault and blank the JSON copies these tests assert on. The
+    kill-switch is honored by credential_store's probe/migrate; it is a
+    no-op on vault-free CI where the backend is already unavailable.
+    """
+    monkeypatch.setenv("VOICETYPE_CREDSTORE_DISABLED", "1")
+    from voice_typing.config import credential_store as _cs
+
+    _cs.refresh_backend_cache()
+    yield
+    _cs.refresh_backend_cache()
 
 
 def test_legacy_keys_migrate_into_gemini_profile(tmp_path):

@@ -6,6 +6,16 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 
+@pytest.fixture(autouse=True)
+def _disable_vault_backend(monkeypatch):
+    """Force fallback mode so tests ignore any live OS vault."""
+    monkeypatch.setenv("VOICETYPE_CREDSTORE_DISABLED", "1")
+    from voice_typing.config import credential_store as _cs
+    _cs.refresh_backend_cache()
+    yield
+    _cs.refresh_backend_cache()
+
+
 @pytest.fixture(scope="module", autouse=True)
 def qapp():
     app = QApplication.instance()

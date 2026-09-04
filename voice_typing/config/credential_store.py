@@ -19,13 +19,26 @@ Outcome contract: backend problems never raise out of this module.
 as short machine-readable status strings via ``last_backend_status()``
 (``ok``, ``no_backend``, ``locked``, ``denied``, ``failed``). No key
 material ever appears in statuses or logs.
+
+Test isolation: setting the ``VOICETYPE_CREDSTORE_DISABLED`` environment
+variable to ``1``/``true``/``yes`` forces fallback mode —
+``is_secure_backend_available()`` returns ``False`` (even when a live OS
+vault exists and regardless of the probe cache) and
+``migrate_plaintext_keys()`` is a no-op. Pre-existing plaintext
+settings tests opt into this so they stay deterministic on machines
+with a live credential backend. Production behavior is unchanged when
+the variable is unset.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 SERVICE_NAME = "VoiceType"
 PROBE_ACCOUNT = "voicetype/__probe__"
+
+#: Env kill-switch forcing fallback mode (test isolation only).
+_DISABLE_ENV_VAR = "VOICETYPE_CREDSTORE_DISABLED"
 
 _OK = "ok"
 _NO_BACKEND = "no_backend"
@@ -39,6 +52,15 @@ _last_status: str = _NO_BACKEND
 
 def _account_for(provider_id: str) -> str:
     return f"voicetype/{provider_id}/api_key"
+
+
+def _disabled_by_env() -> bool:
+    """Return True when the test-isolation kill-switch is set.
+
+    Checked before the probe cache so that opting into fallback mode
+    takes effect even if a previous probe already cached success.
+    """
+    return os.environ.get(_DISABLE_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
 
 
 def _classify_exception(exc: BaseException) -> str:
@@ -76,8 +98,14 @@ def is_secure_backend_available() -> bool:
 
     The probe reads a non-secret canary entry. The result is cached per
     process; call ``refresh_backend_cache()`` before re-probing (Retry).
+    When the ``VOICETYPE_CREDSTORE_DISABLED`` kill-switch is set, always
+    reports unavailable (fallback mode) without touching the backend.
     """
     global _backend_available, _last_status
+    if _disabled_by_env():
+        _backend_available = False
+        _last_status = _NO_BACKEND
+        return False
     if _backend_available is not None:
         return _backend_available
     try:
@@ -199,8 +227,11 @@ def migrate_plaintext_keys(settings_data: dict[str, Any]) -> list[str]:
     write succeeds, so a half-finished migration never destroys a key.
     The legacy value is written first so explicit per-provider values
     win on conflict. Returns the migrated provider IDs. Does NOT save
-    the file; the caller saves once afterwards. Idempotent.
+    the file; the caller saves once afterwards. Idempotent. Forced
+    fallback mode (``VOICETYPE_CREDSTORE_DISABLED``) is a no-op.
     """
+    if _disabled_by_env():
+        return []
     if not isinstance(settings_data, dict):
         return []
     if not is_secure_backend_available():
