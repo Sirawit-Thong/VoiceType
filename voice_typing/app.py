@@ -433,6 +433,12 @@ class WorkerThread(QThread):
         self._provider = None
         self._client = None
         self._hotkey_mgr.stop()
+        if loop is not None:
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._loop = None
 
     def run(self) -> None:
         self._profile = self._snapshot_profile()
