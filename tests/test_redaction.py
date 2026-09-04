@@ -48,3 +48,13 @@ def test_safe_error_truncates_and_redacts():
     assert GOOGLE_KEY not in out
     assert out.startswith("Gemini connect failed: ")
     assert len(out) <= len("Gemini connect failed: ") + 300
+
+
+def test_posture_token_carries_no_key_material():
+    from voice_typing.config import credential_store as _cs
+
+    token = _cs.posture_token()
+    assert token in ("credential_store=vault", "credential_store=fallback(plaintext)")
+    for secret in (GOOGLE_KEY, OPENAI_KEY, DEEPGRAM_KEY):
+        assert secret not in token
+    assert redact_text(token) == token
