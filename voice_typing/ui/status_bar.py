@@ -98,10 +98,10 @@ class _WaveVisualizer(QWidget):
             x = i * (self.BAR_WIDTH + self.BAR_GAP)
             y = (self.height() - bar_h) / 2.0
             painter.drawRoundedRect(
-                x,
-                y,
+                int(x),
+                int(y),
                 self.BAR_WIDTH,
-                bar_h,
+                int(bar_h),
                 self.BAR_RADIUS,
                 self.BAR_RADIUS,
             )

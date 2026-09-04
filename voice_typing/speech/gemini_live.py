@@ -143,8 +143,8 @@ class GeminiLiveClient:
         self._ws = None
         if ws is not None:
             try:
-                if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:
-                    ws.protocol.transport.close()
+                if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:  # type: ignore[union-attr]
+                    ws.protocol.transport.close()  # type: ignore[union-attr]
                 elif hasattr(ws, "transport") and ws.transport is not None:
                     ws.transport.close()
             except Exception:

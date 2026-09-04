@@ -7,10 +7,10 @@ from typing import Any
 def get_asset_path(filename: str = "icon.png") -> Path:
     """Resolve asset path reliably in normal python execution and PyInstaller bundled .exe."""
     if hasattr(sys, "_MEIPASS"):
-        p = Path(sys._MEIPASS) / "voice_typing" / "assets" / filename
+        p = Path(sys._MEIPASS) / "voice_typing" / "assets" / filename  # type: ignore[attr-defined]
         if p.exists():
             return p
-        p2 = Path(sys._MEIPASS) / "assets" / filename
+        p2 = Path(sys._MEIPASS) / "assets" / filename  # type: ignore[attr-defined]
         if p2.exists():
             return p2
     pkg_assets = Path(__file__).resolve().parent.parent / "assets" / filename

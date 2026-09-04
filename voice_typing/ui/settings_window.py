@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
+from PySide6.QtGui import QDesktopServices, QIcon, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -938,7 +938,7 @@ class SettingsWindow(QDialog):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if self._capturing_key and event.type() == QEvent.Type.MouseButtonPress:
-            btn = event.button()
+            btn = QMouseEvent(event).button()
             vk = 0
             if btn == Qt.MouseButton.MiddleButton:
                 vk = 0x04

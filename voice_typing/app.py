@@ -458,7 +458,7 @@ class WorkerThread(QThread):
             self._history = []
         self._save_history()
 
-    def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
+    def _inject_processed(self, future: asyncio.Future[str], raw: str) -> None:
         try:
             text = future.result()
         except Exception:
@@ -490,7 +490,7 @@ class WorkerThread(QThread):
             skip_tls_verify=other.skip_tls_verify,
         )
 
-    def _on_cleanup_done(self, future: asyncio.Future, raw: str) -> None:
+    def _on_cleanup_done(self, future: asyncio.Future[str], raw: str) -> None:
         try:
             cleaned = future.result()
         except Exception:
@@ -915,13 +915,13 @@ class VoiceTypeApp:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("voicetype.app.1.0")
         except Exception:
             pass
-        self._qapp = QApplication.instance() or QApplication(sys.argv)
+        self._qapp: QApplication = QApplication.instance() or QApplication(sys.argv)
         self._qapp.setQuitOnLastWindowClosed(False)
         try:
             icon_file = get_asset_path("icon.ico")
             if not icon_file.exists():
                 icon_file = get_asset_path("icon.png")
-            if icon_file.exists() and hasattr(self._qapp, "setWindowIcon"):
+            if icon_file.exists():
                 self._qapp.setWindowIcon(QIcon(str(icon_file)))
         except Exception:
             pass
