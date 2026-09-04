@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
@@ -875,6 +875,23 @@ class VoiceTypeApp:
         from voice_typing.providers.registry import build_default_registry as _registry
         from voice_typing.providers.registry import supports_dictation as _supports
 
+        settings_data = self._settings.as_dict()
+        current_id = str(settings_data.get("provider_id", "gemini_live") or "gemini_live")
+        current_preset = _PRESETS.get(current_id)
+        if current_preset is not None:
+            try:
+                current_profile = _build_profile(settings_data, current_id)
+            except Exception:
+                current_profile = None
+            if current_profile is not None:
+                if current_preset.needs_api_key:
+                    if str(getattr(current_profile, "api_key", "") or "").strip():
+                        return
+                else:
+                    _base = str(getattr(current_profile, "base_url", "") or "").strip()
+                    _def_base = str(getattr(current_preset, "default_base_url", "") or "").strip()
+                    if _base or _def_base:
+                        return
         snapshot = _build_profile(self._settings.as_dict())
         if _supports(snapshot, _registry()) is None:
             return
@@ -892,14 +909,23 @@ class VoiceTypeApp:
         try:
             provider_id = _ORDER[labels.index(label)]
         except ValueError:
-            provider_id = "gemini_live"
+            QMessageBox.warning(
+                None,
+                "VoiceType Setup",
+                "Unknown provider selected. You can configure it later in Settings.",
+            )
+            return
         preset = _PRESETS[provider_id]
         profiles = self._settings.get("provider_profiles", {})
         profiles = dict(profiles) if isinstance(profiles, dict) else {}
-        profile = dict(profiles.get(provider_id, {}))
+        _raw_profile = profiles.get(provider_id, {})
+        profile = dict(_raw_profile) if isinstance(_raw_profile, dict) else {}
         if preset.needs_api_key:
             api_key, ok = QInputDialog.getText(
-                None, "VoiceType Setup", f"Enter API key for {preset.label}:"
+                None,
+                "VoiceType Setup",
+                f"Enter API key for {preset.label}:",
+                echo=QLineEdit.EchoMode.Password,
             )
             if not ok or not api_key.strip():
                 QMessageBox.warning(
@@ -913,8 +939,18 @@ class VoiceTypeApp:
             base_url, ok = QInputDialog.getText(
                 None, "VoiceType Setup", "Enter base URL (for example http://localhost:1234/v1):"
             )
-            if ok and base_url.strip():
-                profile["base_url"] = base_url.strip()
+            if ok and str(base_url or "").strip():
+                profile["base_url"] = str(base_url).strip()
+            else:
+                _existing_base = str(profile.get("base_url", "") or "").strip()
+                _default_base = str(preset.default_base_url or "").strip()
+                if not _existing_base and not _default_base:
+                    QMessageBox.warning(
+                        None,
+                        "VoiceType Setup",
+                        "No endpoint entered. You can configure it later in Settings.",
+                    )
+                    return
         if preset.default_model and not str(profile.get("model", "") or "").strip():
             profile["model"] = preset.default_model
         profiles[provider_id] = profile
