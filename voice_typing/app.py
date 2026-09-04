@@ -694,8 +694,7 @@ class WorkerThread(QThread):
         if stopped:
             self._signals.recording_stopped.emit()
             text = self._buffer.finalize()
-            if text.strip():
-                self._inject(text)
+            self._emit_final_text(text)
 
     def _reconnect(self) -> bool:
         delays = (2, 4, 8)
