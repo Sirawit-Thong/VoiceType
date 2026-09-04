@@ -860,6 +860,8 @@ class VoiceTypeApp:
         self._tray.signals.clear_history.connect(self._on_clear_history)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._tray.signals.re_inject.connect(self._on_re_inject)
+        self._tray.signals.open_history.connect(self._open_history)
+        self._tray.signals.check_update.connect(self._check_for_update)
         self._tray.signals.show_status_bar.connect(self._status_bar.show)
         self._status_bar.signals.start_recording.connect(self._start_recording)
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
@@ -910,6 +912,7 @@ class VoiceTypeApp:
         self._worker._signals.status.connect(self._on_status)
         self._worker._signals.audio_level.connect(self._status_bar.set_level)
         self._worker._signals.history_changed.connect(self._tray.set_history)
+        self._worker._signals.preview_requested.connect(self._on_preview_requested)
         self._worker.start()
 
     def _on_re_inject(self, text: str) -> None:
@@ -997,6 +1000,50 @@ class VoiceTypeApp:
             self._tray.set_history(self._worker._history_texts())
         else:
             self._tray.set_history([])
+
+    def _on_preview_requested(self, text: str) -> None:
+        from voice_typing.ui.preview_dialog import PreviewDialog
+
+        dlg = PreviewDialog()
+        dlg.set_text(text)
+        dlg.exec()
+        verdict = dlg.take_verdict()
+        if verdict == "insert":
+            worker = self._worker
+            if worker is not None:
+                worker._inject_from_preview(dlg.current_text())
+        # discard: do nothing
+
+    def _open_history(self) -> None:
+        from voice_typing.ui.history_dialog import HistoryDialog
+
+        history = self._worker._history if self._worker is not None else []
+        dlg = HistoryDialog(history)
+        dlg.exec()
+        if self._worker is not None:
+            self._worker._history = dlg.history
+            self._worker._save_history()
+            self._tray.set_history(self._worker._history_texts())
+
+    def _check_for_update(self) -> None:
+        import asyncio
+
+        from voice_typing.update.checker import check_for_updates
+        from voice_typing.version import __version__
+
+        def _do_check() -> None:
+            try:
+                result = asyncio.run(check_for_updates(__version__))
+            except Exception:
+                return
+            if result.available:
+                QMessageBox.information(
+                    None,
+                    "Update Available",
+                    f"A newer version is available: {result.latest_tag}\n\n{result.url}",
+                )
+
+        threading.Thread(target=_do_check, daemon=True).start()
 
     def _open_settings(self) -> None:
         if self._settings_win is None:
