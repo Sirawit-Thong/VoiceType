@@ -75,3 +75,37 @@ def test_worker_clear_history_keeps_pinned(tmp_path):
     ]
     w.clear_history(keep_pinned=True)
     assert [e["text"] for e in w._history] == ["keep"]
+
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    yield app
+
+
+def test_history_dialog_filter_clear_pinned(qapp):
+    from voice_typing.ui.history_dialog import HistoryDialog
+    history = [
+        _mk("alpha"), _mk("beta", pinned=True), _mk("gamma"), _mk("alpha"),
+    ]
+    d = HistoryDialog(history)
+    d._search.setText("alpha")
+    visible = [d._list.itemText(i) for i in range(d._list.count())]
+    assert visible.count("alpha") == 1  # pinned row stays; unpinned dedup'ed
+    assert "beta" not in visible  # "beta" does not match "alpha" filter
+    d._search.clear()  # show all to pin alpha
+    d._list.setCurrentText("alpha")
+    d._on_pin()
+    updated = [e for e in d.history if e["text"] == "alpha"]
+    assert any(e.get("pinned") for e in updated), "alpha should be pinned"
+    d2 = HistoryDialog(d.history)
+    d2._on_clear()
+    texts = [e["text"] for e in d2.history]
+    assert "beta" in texts  # beta was pinned
+    assert "alpha" in texts  # alpha was just pinned
