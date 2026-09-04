@@ -20,6 +20,27 @@ def test_injector_initialization():
     assert custom.typing_speed == 0.05
 
 
+def test_delete_chars_zero_is_noop(monkeypatch):
+    from voice_typing.windows import text_injector as ti
+    calls = []
+    monkeypatch.setattr(ti, "_send_key_down", lambda vk: calls.append(("down", vk)))
+    monkeypatch.setattr(ti, "_send_key_up", lambda vk: calls.append(("up", vk)))
+    inj = ti.TextInjector()
+    assert inj.delete_chars(0) is True
+    assert inj.delete_chars(-3) is True
+    assert calls == []
+
+
+def test_delete_chars_sends_n_backspaces(monkeypatch):
+    from voice_typing.windows import text_injector as ti
+    calls = []
+    monkeypatch.setattr(ti, "_send_key_down", lambda vk: calls.append(("down", vk)))
+    monkeypatch.setattr(ti, "_send_key_up", lambda vk: calls.append(("up", vk)))
+    inj = ti.TextInjector()
+    assert inj.delete_chars(3) is True
+    assert calls == [("down", 0x08), ("up", 0x08)] * 3
+
+
 def test_auto_space_adds_space_between_utterances():
     assert auto_space("สวัสดี", "ทำอะไรอยู่") == " ทำอะไรอยู่"
 

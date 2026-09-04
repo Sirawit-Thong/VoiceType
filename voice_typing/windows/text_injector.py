@@ -10,6 +10,7 @@ user32 = ctypes.windll.user32
 
 VK_CONTROL = 0x11
 VK_V = 0x56
+VK_BACK = 0x08
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 
@@ -107,6 +108,18 @@ class TextInjector:
 
     def inject(self, text: str, typing_speed: float | None = None) -> bool:
         return self._clipboard_inject(text) or self._sendinput_inject(text, typing_speed=typing_speed)
+
+    def delete_chars(self, n: int) -> bool:
+        """Synthesize n Backspace presses. No-op (True) for n <= 0. True only if all sent."""
+        if n <= 0:
+            return True
+        try:
+            for _ in range(n):
+                _send_key_down(VK_BACK)
+                _send_key_up(VK_BACK)
+            return True
+        except Exception:
+            return False
 
     def _restore_clipboard_async(
         self, text: str, delay: float = 0.2
