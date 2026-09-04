@@ -648,7 +648,11 @@ class SettingsWindow(QDialog):
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
         self._refresh_provider_fields(provider_id)
 
-        self._fast_mode.setChecked(self._settings.get("fast_mode", True))
+        cleanup_cfg = self._settings.get("text_cleanup", {})
+        if isinstance(cleanup_cfg, dict) and "enabled" in cleanup_cfg:
+            self._fast_mode.setChecked(not bool(cleanup_cfg.get("enabled")))
+        else:
+            self._fast_mode.setChecked(self._settings.get("fast_mode", True))
         self._custom_vocab.setText(self._settings.get("custom_vocabulary", ""))
 
     def _set_row_visible(self, label: QLabel, field: QWidget, visible: bool) -> None:
@@ -925,6 +929,7 @@ class SettingsWindow(QDialog):
             self._settings.set("api_key", str(active.get("api_key", "") or ""))
             self._settings.set("model", _normalize_model(str(active.get("model", "") or ""), "gemini_live"))
         self._settings.set("fast_mode", self._fast_mode.isChecked())
+        self._settings.set("text_cleanup", {"enabled": not self._fast_mode.isChecked(), "provider_id": provider_id})
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
