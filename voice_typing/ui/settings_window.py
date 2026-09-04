@@ -821,14 +821,17 @@ class SettingsWindow(QDialog):
         super().keyPressEvent(event)
 
     def _test_api_key(self) -> None:
-        api_key = self._api_key.text().strip()
-        if not api_key:
+        provider_id = self._active_provider_id
+        preset = PROVIDER_PRESETS.get(provider_id)
+        self._store_current_profile_fields()
+        profile_dict = dict(self._profiles.get(provider_id, {}))
+        if preset is not None and preset.needs_api_key and not str(profile_dict.get("api_key", "") or "").strip():
             QMessageBox.warning(self, "API Key Required", "Enter an API Key to test.")
             return
         self._test_key_btn.setEnabled(False)
         self._test_key_btn.setText("Testing...")
         self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
-        tester = _ApiKeyTester(api_key)
+        tester = _ApiKeyTester(provider_id, profile_dict)
         tester.finished.connect(self._on_api_key_tested)
         tester.start()
         self._key_tester = tester
@@ -838,21 +841,29 @@ class SettingsWindow(QDialog):
         self._test_key_btn.setText("Test Key")
         if success:
             self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
-            QMessageBox.information(self, "API Key Test", msg)
+            QMessageBox.information(self, "API Key Test", redact_text(msg)[:800])
         else:
             self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
-            QMessageBox.warning(self, "API Key Test", msg)
+            QMessageBox.warning(self, "API Key Test", redact_text(msg)[:800])
 
     def _load_models(self) -> None:
-        api_key = self._api_key.text().strip()
-        if not api_key:
+        provider_id = self._active_provider_id
+        preset = PROVIDER_PRESETS.get(provider_id)
+        if preset is None or not preset.capabilities.model_listing:
+            QMessageBox.information(
+                self, "Not Supported", "This provider does not list models. Enter the model manually."
+            )
+            return
+        self._store_current_profile_fields()
+        profile_dict = dict(self._profiles.get(provider_id, {}))
+        if preset.needs_api_key and not str(profile_dict.get("api_key", "") or "").strip():
             QMessageBox.warning(
-                self, "API Key Required", "Enter your Gemini API key first."
+                self, "API Key Required", "Enter your API key first."
             )
             return
         self._load_models_btn.setEnabled(False)
         self._load_models_btn.setText("Loading...")
-        loader = _ModelLoader(api_key)
+        loader = _ModelLoader(provider_id, profile_dict)
         loader.finished.connect(self._on_models_loaded)
         loader.failed.connect(self._on_models_failed)
         loader.start()
@@ -861,11 +872,11 @@ class SettingsWindow(QDialog):
     def _on_models_loaded(self, models: list) -> None:
         self._load_models_btn.setEnabled(True)
         self._load_models_btn.setText("Load models")
-        current = _normalize_model(self._settings.get("model", MODEL))
+        current = _normalize_model(self._model_combo.currentText(), self._active_provider_id)
         self._model_combo.clear()
         selected = 0
         for i, name in enumerate(models):
-            norm_name = _normalize_model(name)
+            norm_name = _normalize_model(name, self._active_provider_id)
             self._model_combo.addItem(norm_name, norm_name)
             if norm_name == current:
                 selected = i
@@ -878,7 +889,7 @@ class SettingsWindow(QDialog):
         self._load_models_btn.setEnabled(True)
         self._load_models_btn.setText("Load models")
         QMessageBox.warning(
-            self, "Load Models Failed", f"Could not fetch models:\n{reason[:400]}"
+            self, "Load Models Failed", f"Could not fetch models:\n{redact_text(reason)[:400]}"
         )
 
     def _reset_to_defaults(self) -> None:
@@ -905,11 +916,14 @@ class SettingsWindow(QDialog):
         self._settings.set("microphone_device_id", self._mic_combo.currentData())
         self._settings.set("typing_speed", self._speed_slider.value())
         self._settings.set("silence_threshold", self._sensitivity_slider.value() / 1000.0)
-        self._settings.set("api_key", self._api_key.text().strip())
-        model_data = self._model_combo.currentData()
-        if model_data is None:
-            model_data = self._model_combo.currentText()
-        self._settings.set("model", _normalize_model(str(model_data)))
+        self._store_current_profile_fields()
+        provider_id = str(self._provider_combo.currentData() or "gemini_live")
+        self._settings.set("provider_id", provider_id)
+        self._settings.set("provider_profiles", {key: dict(value) for key, value in self._profiles.items()})
+        active = self._profiles.get(provider_id, {})
+        if provider_id == "gemini_live":
+            self._settings.set("api_key", str(active.get("api_key", "") or ""))
+            self._settings.set("model", _normalize_model(str(active.get("model", "") or ""), "gemini_live"))
         self._settings.set("fast_mode", self._fast_mode.isChecked())
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
