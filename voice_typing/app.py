@@ -160,7 +160,49 @@ class WorkerThread(QThread):
             self._start_recording()
 
     def _on_hotkey_release(self, vk_code: int) -> None:
-        self._finalize_and_inject()
+        if self._supports_streaming:
+            self._finalize_and_inject()
+        else:
+            self._finish_batch_turn()
+
+    def _finish_batch_turn(self) -> None:
+        with self._lock:
+            if not self._recording:
+                return
+            try:
+                self._recorder.stop()
+            except Exception:
+                pass
+            self._recording = False
+            pcm = bytes(self._pcm_buffer)
+            self._pcm_buffer.clear()
+        self._signals.recording_stopped.emit()
+        if not pcm:
+            self._signals.status.emit("Ready")
+            return
+        try:
+            wav_bytes = pcm_to_wav_bytes(pcm)
+        except ValueError:
+            self._signals.status.emit("Ready")
+            return
+        provider = self._provider
+        loop = self._loop
+        if provider is None or loop is None:
+            self._signals.error.emit("Speech provider is not ready")
+            return
+        self._signals.status.emit("Transcribing...")
+        try:
+            future = asyncio.run_coroutine_threadsafe(provider.finish_turn(wav_bytes), loop)
+            event = future.result(timeout=60)
+        except Exception as exc:
+            self._signals.error.emit(redact_text(str(exc))[:300] or "Transcription failed")
+            self._signals.status.emit("Ready")
+            return
+        if event is not None and event.kind == EventKind.FINAL and event.text.strip():
+            self._on_provider_event(event)
+        elif event is not None and event.error is not None:
+            self._on_provider_error(event.error)
+        self._signals.status.emit("Ready")
 
     def reconfigure_hotkey(self) -> None:
         new_vk = self._settings.get("hotkey", DEFAULT_HOTKEY)
