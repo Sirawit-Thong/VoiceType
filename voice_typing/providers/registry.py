@@ -36,10 +36,18 @@ class ProviderRegistry:
 
 
 def build_default_registry() -> ProviderRegistry:
+    from voice_typing.providers.deepgram_adapter import DeepgramStreamingAdapter
     from voice_typing.providers.gemini_adapter import GeminiStreamingAdapter
+    from voice_typing.providers.openai_batch import GroqBatchAdapter, OpenAIBatchAdapter
+    from voice_typing.providers.openai_realtime import OpenAIRealtimeAdapter
 
     registry = ProviderRegistry()
     registry.register("gemini_live", GeminiStreamingAdapter)
+    registry.register("openai_realtime", OpenAIRealtimeAdapter)
+    registry.register("groq", GroqBatchAdapter)
+    registry.register("deepgram", DeepgramStreamingAdapter)
+    registry.register("openai_compatible", OpenAIBatchAdapter)
+    registry.register("freellm", OpenAIBatchAdapter)
     return registry
 
 
