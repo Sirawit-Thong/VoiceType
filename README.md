@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Fast, accurate, and seamless real-time voice-to-text for Windows powered by Google Gemini Live WebSocket API.</strong>
+  <strong>Fast, accurate, and seamless voice-to-text for Windows with pluggable STT providers: Gemini Live, OpenAI, Groq, Deepgram, and any OpenAI-compatible endpoint.</strong>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 ## ✨ Features
 
 ### ⚡ Real-Time Streaming Speech Recognition
-* **Gemini Live WebSocket Engine**: Streams raw PCM audio in real-time with sub-second transcription response.
+* **Pluggable STT Engine**: Gemini Live, OpenAI Realtime, and Deepgram stream mic audio with sub-second partial results; Groq, OpenAI-compatible endpoints, and the FreeLLM preset transcribe on hotkey release.
 * **Fast Mode**: Instantly injects transcribed text with zero latency directly into any active application (Chrome, VS Code, Discord, Word, Line, Notion, etc.).
 
 ### 💊 Modern Dynamic Capsule Floating UI
