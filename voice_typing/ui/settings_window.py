@@ -28,48 +28,79 @@ from PySide6.QtWidgets import (
 
 from voice_typing.audio.recorder import list_input_devices
 from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, get_asset_path
-from voice_typing.speech.gemini_live import MODEL, fetch_live_models
+from voice_typing.providers.contracts import build_profile
+from voice_typing.providers.presets import PROVIDER_ORDER, PROVIDER_PRESETS, ProviderPreset
+from voice_typing.providers.redaction import redact_text
+from voice_typing.providers.registry import build_default_registry
+from voice_typing.speech.gemini_live import MODEL
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
-def _normalize_model(name: str) -> str:
+def _normalize_model(name: str, provider_id: str = "gemini_live") -> str:
     name = (name or "").strip()
-    if not name:
-        return MODEL
-    return name if name.startswith("models/") else f"models/{name}"
+    if provider_id == "gemini_live":
+        if not name:
+            return MODEL
+        return name if name.startswith("models/") else f"models/{name}"
+    if name:
+        return name
+    preset = PROVIDER_PRESETS.get(provider_id)
+    return preset.default_model if preset is not None else ""
 
 
 class _ModelLoader(QThread):
     finished = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, provider_id: str, profile: dict) -> None:
         super().__init__()
-        self._api_key = api_key
+        self._provider_id = provider_id
+        self._profile = profile
 
     def run(self) -> None:
+        import asyncio
+
         try:
-            self.finished.emit(fetch_live_models(self._api_key))
+            data = {"provider_id": self._provider_id, "provider_profiles": {self._provider_id: self._profile}}
+            profile = build_profile(data, self._provider_id)
+            adapter_cls = build_default_registry().get(self._provider_id)
+            models = asyncio.run(adapter_cls.list_models(profile))
+            self.finished.emit(models)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(redact_text(str(exc))[:400])
 
 
 class _ApiKeyTester(QThread):
     finished = Signal(bool, str)
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, provider_id: str, profile: dict) -> None:
         super().__init__()
-        self._api_key = api_key
+        self._provider_id = provider_id
+        self._profile = profile
 
     def run(self) -> None:
+        import asyncio
+
         try:
-            models = fetch_live_models(self._api_key)
-            if models:
-                self.finished.emit(True, f"API Key is valid! Connected to Gemini API ({len(models)} models available).")
+            data = {"provider_id": self._provider_id, "provider_profiles": {self._provider_id: self._profile}}
+            profile = build_profile(data, self._provider_id)
+            registry = build_default_registry()
+            adapter_cls = registry.get(self._provider_id)
+            error = adapter_cls.validate_profile(profile)
+            if error is not None:
+                self.finished.emit(False, error.message)
+                return
+            adapter = adapter_cls(profile, lambda event: None)
+            if adapter.capabilities.model_listing:
+                models = asyncio.run(adapter_cls.list_models(profile))
+                if models:
+                    self.finished.emit(True, f"API key is valid ({len(models)} models available).")
+                else:
+                    self.finished.emit(False, "Key test returned no models.")
             else:
-                self.finished.emit(False, "API Key test returned no models.")
+                self.finished.emit(True, "Profile looks valid. Model listing is not supported; the model was kept as entered.")
         except Exception as exc:
-            self.finished.emit(False, f"API Key test failed:\n{exc}")
+            self.finished.emit(False, f"Key test failed:\n{redact_text(str(exc))[:400]}")
 
 
 class _LiveMicTester(QThread):
@@ -133,6 +164,8 @@ class SettingsWindow(QDialog):
         self._mic_tester: _LiveMicTester | None = None
         self._capturing_key = False
         self._capture_timer: QTimer | None = None
+        self._profiles: dict[str, dict] = {}
+        self._active_provider_id = "gemini_live"
         self.setWindowTitle("VoiceType Settings")
         icon_path = get_asset_path("icon.ico")
         if not icon_path.exists():
@@ -175,7 +208,7 @@ class SettingsWindow(QDialog):
         tabs.addTab(self._general_tab(), "⚙️  General")
         tabs.addTab(self._hotkey_tab(), "⌨️  Hotkey")
         tabs.addTab(self._speech_tab(), "🎤  Speech")
-        tabs.addTab(self._gemini_tab(), "🤖  AI / Gemini")
+        tabs.addTab(self._gemini_tab(), "🎙️  Provider")
         tabs.addTab(self._about_tab(), "ℹ️  About")
         layout.addWidget(tabs)
 
@@ -346,8 +379,21 @@ class SettingsWindow(QDialog):
         layout.setVerticalSpacing(12)
         layout.setHorizontalSpacing(16)
 
+        self._provider_combo = QComboBox()
+        for pid in PROVIDER_ORDER:
+            self._provider_combo.addItem(PROVIDER_PRESETS[pid].label, pid)
+        self._provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        layout.addRow("Speech provider:", self._provider_combo)
+
+        self._provider_help = QLabel()
+        self._provider_help.setWordWrap(True)
+        self._provider_help.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        layout.addRow("", self._provider_help)
+
+        self._api_label = QLabel("API Key:")
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key.textChanged.connect(lambda _text: self._update_availability())
         self._api_status = QLabel("●")
         self._api_status.setObjectName("api_status")
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
@@ -359,17 +405,50 @@ class SettingsWindow(QDialog):
         key_layout.addWidget(self._api_key, 1)
         key_layout.addWidget(self._api_status)
         key_layout.addWidget(self._test_key_btn)
-        layout.addRow("API Key:", key_layout)
+        layout.addRow(self._api_label, key_layout)
 
+        self._base_label = QLabel("Base URL:")
+        self._base_url = QLineEdit()
+        self._base_url.setPlaceholderText("http://localhost:1234/v1")
+        self._base_url.textChanged.connect(lambda _text: self._update_availability())
+        layout.addRow(self._base_label, self._base_url)
+
+        self._path_label = QLabel("Transcription path:")
+        self._transcription_path = QLineEdit()
+        self._transcription_path.setPlaceholderText("/audio/transcriptions")
+        layout.addRow(self._path_label, self._transcription_path)
+
+        self._stt_mode_label = QLabel("STT mode:")
+        self._stt_mode_combo = QComboBox()
+        self._stt_mode_combo.addItem("Realtime streaming", "realtime")
+        self._stt_mode_combo.addItem("Batch upload fallback", "batch")
+        layout.addRow(self._stt_mode_label, self._stt_mode_combo)
+
+        self._send_bearer = QCheckBox("Send API key as Bearer header (uncheck for keyless local servers)")
+        layout.addRow("", self._send_bearer)
+
+        self._skip_tls = QCheckBox("Skip TLS verification (insecure, local testing only)")
+        layout.addRow("", self._skip_tls)
+        tls_hint = QLabel("Only for self-signed local servers. Never enable for public endpoints.")
+        tls_hint.setStyleSheet("color: #ea4335; font-size: 12px;")
+        tls_hint.setWordWrap(True)
+        layout.addRow("", tls_hint)
+        self._tls_hint = tls_hint
+
+        self._model_label = QLabel("Model:")
         self._model_combo = QComboBox()
-        self._model_combo.setEditable(False)
+        self._model_combo.setEditable(True)
         self._load_models_btn = QPushButton("Load models")
         self._load_models_btn.clicked.connect(self._load_models)
 
         model_layout = QHBoxLayout()
         model_layout.addWidget(self._model_combo, 1)
         model_layout.addWidget(self._load_models_btn)
-        layout.addRow("Model:", model_layout)
+        layout.addRow(self._model_label, model_layout)
+
+        self._availability_label = QLabel("")
+        self._availability_label.setWordWrap(True)
+        layout.addRow("Status:", self._availability_label)
 
         self._fast_mode = QCheckBox()
         layout.addRow("Fast Mode:", self._fast_mode)
@@ -546,17 +625,116 @@ class SettingsWindow(QDialog):
         self._sensitivity_slider.setValue(sens_val)
         self._update_sensitivity_label(self._sensitivity_slider.value())
 
-        # Gemini
-        self._api_key.setText(self._settings.get("api_key", ""))
+        # Provider profiles working copy
+        raw_profiles = self._settings.get("provider_profiles", {})
+        if isinstance(raw_profiles, dict):
+            self._profiles = {str(k): dict(v) if isinstance(v, dict) else {} for k, v in raw_profiles.items()}
+        else:
+            self._profiles = {}
+        provider_id = str(self._settings.get("provider_id", "gemini_live") or "gemini_live")
+        if provider_id not in PROVIDER_PRESETS:
+            provider_id = "gemini_live"
+        legacy_key = str(self._settings.get("api_key", "") or "")
+        legacy_model = str(self._settings.get("model", "") or "")
+        gemini_profile = self._profiles.setdefault("gemini_live", {})
+        if legacy_key and not gemini_profile.get("api_key"):
+            gemini_profile["api_key"] = legacy_key
+        if legacy_model and not gemini_profile.get("model"):
+            gemini_profile["model"] = legacy_model
+        self._active_provider_id = provider_id
+        self._provider_combo.blockSignals(True)
+        self._provider_combo.setCurrentIndex(max(0, self._provider_combo.findData(provider_id)))
+        self._provider_combo.blockSignals(False)
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
-
-        current_model = _normalize_model(self._settings.get("model", MODEL))
-        self._model_combo.clear()
-        self._model_combo.addItem(current_model, current_model)
-        self._model_combo.setCurrentIndex(0)
+        self._refresh_provider_fields(provider_id)
 
         self._fast_mode.setChecked(self._settings.get("fast_mode", True))
         self._custom_vocab.setText(self._settings.get("custom_vocabulary", ""))
+
+    def _set_row_visible(self, label: QLabel, field: QWidget, visible: bool) -> None:
+        label.setVisible(visible)
+        field.setVisible(visible)
+
+    def _current_profile_from_widgets(self, provider_id: str) -> dict:
+        model_data = self._model_combo.currentData()
+        model = str(model_data).strip() if model_data else self._model_combo.currentText().strip()
+        return {
+            "api_key": self._api_key.text().strip(),
+            "model": model,
+            "base_url": self._base_url.text().strip(),
+            "transcription_path": self._transcription_path.text().strip() or "/audio/transcriptions",
+            "stt_mode": str(self._stt_mode_combo.currentData() or "default"),
+            "send_bearer_key": self._send_bearer.isChecked(),
+            "skip_tls_verify": self._skip_tls.isChecked(),
+        }
+
+    def _store_current_profile_fields(self) -> None:
+        self._profiles[self._active_provider_id] = self._current_profile_from_widgets(self._active_provider_id)
+
+    def _on_provider_changed(self, index: int) -> None:
+        new_id = str(self._provider_combo.itemData(index) or "gemini_live")
+        if new_id == self._active_provider_id:
+            return
+        self._store_current_profile_fields()
+        self._active_provider_id = new_id
+        self._refresh_provider_fields(new_id)
+
+    def _refresh_provider_fields(self, provider_id: str) -> None:
+        preset = PROVIDER_PRESETS[provider_id]
+        profile = self._profiles.get(provider_id, {})
+        self._provider_help.setText(preset.help_text)
+        self._api_key.blockSignals(True)
+        self._api_key.setText(str(profile.get("api_key", "") or ""))
+        self._api_key.blockSignals(False)
+        if preset.needs_api_key:
+            self._api_key.setPlaceholderText("")
+        else:
+            self._api_key.setPlaceholderText("Optional - leave empty for keyless servers")
+        self._base_url.setText(str(profile.get("base_url", "") or "") or preset.default_base_url)
+        self._transcription_path.setText(str(profile.get("transcription_path", "") or "") or preset.default_transcription_path)
+        model_value = str(profile.get("model", "") or "") or preset.default_model
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        if model_value:
+            self._model_combo.addItem(_normalize_model(model_value, provider_id), model_value)
+            self._model_combo.setCurrentIndex(0)
+        self._model_combo.blockSignals(False)
+        stt_mode = str(profile.get("stt_mode", "default") or "default")
+        if stt_mode not in ("realtime", "batch"):
+            stt_mode = "default"
+        self._stt_mode_combo.setCurrentIndex(1 if stt_mode == "batch" else 0)
+        self._send_bearer.setChecked(bool(profile.get("send_bearer_key", True)))
+        self._skip_tls.setChecked(bool(profile.get("skip_tls_verify", False)))
+        batch_like = provider_id in ("groq", "openai_realtime", "openai_compatible", "freellm")
+        endpoint_like = provider_id in ("groq", "openai_compatible", "freellm")
+        custom_endpoint = provider_id in ("openai_compatible", "freellm")
+        self._set_row_visible(self._base_label, self._base_url, endpoint_like)
+        self._base_url.setEnabled(custom_endpoint)
+        self._set_row_visible(self._path_label, self._transcription_path, batch_like)
+        self._set_row_visible(self._stt_mode_label, self._stt_mode_combo, provider_id == "openai_realtime")
+        self._send_bearer.setVisible(custom_endpoint)
+        self._skip_tls.setVisible(custom_endpoint)
+        self._tls_hint.setVisible(custom_endpoint)
+        self._update_availability()
+
+    def _update_availability(self) -> None:
+        if not hasattr(self, "_provider_combo"):
+            return
+        provider_id = str(self._provider_combo.currentData() or self._active_provider_id)
+        if provider_id not in PROVIDER_PRESETS:
+            return
+        snapshot = build_profile(
+            {"provider_id": provider_id, "provider_profiles": {provider_id: self._current_profile_from_widgets(provider_id)}},
+            provider_id,
+        )
+        from voice_typing.providers.registry import supports_dictation as _supports
+
+        error = _supports(snapshot, build_default_registry())
+        if error is None:
+            self._availability_label.setText("Ready for dictation")
+        else:
+            self._availability_label.setText(f"Unavailable for dictation: {error.message}")
+        self._load_models_btn.setEnabled(bool(PROVIDER_PRESETS[provider_id].capabilities.model_listing))
 
     def _refresh_mics(self) -> None:
         current = self._mic_combo.currentData()
