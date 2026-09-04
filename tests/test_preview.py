@@ -58,3 +58,43 @@ def test_dedup_suppresses_repeat_within_half_second(tmp_path):
     w._emit_final_text("hello")
     w._emit_final_text("hello")  # within 0.5s -> suppressed
     assert got == ["hello"]
+
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    yield app
+
+
+def test_preview_dialog_insert_edit_discard(qapp):
+    from voice_typing.ui.preview_dialog import PreviewDialog
+    d = PreviewDialog()
+    d.set_text("hello")
+    assert d.current_text() == "hello"
+    assert d._text.isReadOnly() is True
+    d._on_edit()
+    assert d._text.isReadOnly() is False
+    d._text.setPlainText("hello edited")
+    d._on_insert()
+    assert d.take_verdict() == "insert"
+    assert d.isHidden()  # offscreen: never shown
+    d2 = PreviewDialog()
+    d2.set_text("x")
+    d2._on_discard()
+    assert d2.take_verdict() == "discard"
+
+
+def test_preview_dialog_last_wins_replaces(qapp):
+    from voice_typing.ui.preview_dialog import PreviewDialog
+    d = PreviewDialog()
+    d.set_text("first")
+    d._on_edit()
+    d.set_text("second")  # new final replaces, resets to read-only
+    assert d.current_text() == "second"
+    assert d._text.isReadOnly() is True
