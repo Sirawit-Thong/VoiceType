@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt-brightgreen.svg" alt="PySide6" />
   <img src="https://img.shields.io/badge/AI%20Model-Gemini%20Live%20API-orange.svg" alt="Gemini Live" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg" alt="Windows" />
-  <img src="https://img.shields.io/badge/Tests-112%20Passed-success.svg" alt="Tests" />
+  <img src="https://img.shields.io/badge/Tests-265%20Passed-success.svg" alt="Tests" />
     <img src="https://github.com/Sirawit-Thong/VoiceType/actions/workflows/ci.yml/badge.svg" alt="CI" />
 </p>
 
@@ -142,7 +142,7 @@ VoiceType/
 │   │   ├── startup.py
 │   │   └── text_injector.py
 │   └── app.py              # Main application entry point & coordinator
-├── tests/                  # 112+ Unit & Integration Tests (pytest)
+├── tests/                  # 265+ Unit & Integration Tests (pytest)
 ├── build.spec              # PyInstaller build specification
 ├── pyproject.toml          # Project configuration & dependencies
 └── README.md               # Project documentation
@@ -158,7 +158,7 @@ Run the automated test suite with `pytest`:
 pytest -v
 ```
 
-All 112 tests covering audio buffers, text injection, hotkey handling, settings persistence, and UI components should pass.
+All 265 tests covering audio buffers, text injection, hotkey handling, settings persistence, and UI components should pass.
 
 ## 📄 License & Terms of Use
 
