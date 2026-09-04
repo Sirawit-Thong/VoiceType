@@ -187,26 +187,30 @@ class WorkerThread(QThread):
         else:
             self._processor = None
 
-        new_model = self._settings.get("model") or MODEL
+        new_profile = self._snapshot_profile()
         new_lang = self._settings.get("language", "auto")
-        if self._client is not None:
-            client_model = getattr(self._client, "_model", "")
-            client_key = getattr(self._client, "_api_key", "")
-            client_lang = getattr(self, "_current_language", "auto")
-            if (
-                client_key != api_key
-                or client_model != new_model
-                or client_lang != new_lang
-            ):
-                if self._loop is not None and self._loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._client.disconnect(), self._loop
-                    )
-                elif self._loop is not None:
+        if self._provider is not None and (
+            self._profile != new_profile or self._current_language != new_lang
+        ):
+            self._profile = new_profile
+            self._current_language = new_lang
+            loop = self._loop
+            if loop is not None:
+                try:
+                    close_coro = self._provider.close()
+                except Exception:
+                    close_coro = None
+                if close_coro is not None:
                     try:
-                        self._loop.run_until_complete(self._client.disconnect())
+                        if loop.is_running():
+                            asyncio.run_coroutine_threadsafe(close_coro, loop)
+                        else:
+                            loop.run_until_complete(close_coro)
                     except Exception:
                         pass
+        else:
+            self._profile = new_profile
+            self._current_language = new_lang
 
     def _start_recording(self) -> None:
         with self._lock:
@@ -392,12 +396,21 @@ class WorkerThread(QThread):
                 except Exception:
                     pass
                 self._recording = False
+            self._pcm_buffer.clear()
         client = self._client
         if client is not None:
             try:
-                client.abort()
+                abort = getattr(client, "abort", None)
+                if callable(abort):
+                    abort()
             except Exception:
                 pass
+            loop = self._loop
+            if loop is not None and loop.is_running():
+                try:
+                    asyncio.run_coroutine_threadsafe(client.close(), loop)
+                except Exception:
+                    pass
         loop = self._loop
         if loop is not None and loop.is_running():
             try:
@@ -410,31 +423,29 @@ class WorkerThread(QThread):
             pass
 
     def _cleanup(self) -> None:
-        client = self._client
+        provider = self._provider
         loop = self._loop
-        if loop is not None and client is not None and client.is_connected:
+        if provider is not None and loop is not None:
             try:
-                loop.run_until_complete(client.disconnect())
+                loop.run_until_complete(provider.close())
             except Exception:
                 pass
-        elif client is not None:
-            try:
-                client.abort()
-            except Exception:
-                pass
+        self._provider = None
+        self._client = None
         self._hotkey_mgr.stop()
-        if loop is not None:
-            try:
-                loop.close()
-            except Exception:
-                pass
-            self._loop = None
 
     def run(self) -> None:
-        api_key = self._settings.get("api_key", "")
-        if not api_key:
-            self._signals.error.emit("No API key configured")
+        self._profile = self._snapshot_profile()
+        try:
+            self._provider = self._provider_factory(self._profile, self._on_provider_event)
+        except ProviderConfigurationError as exc:
+            self._signals.error.emit(exc.message[:300] or "Speech provider is not configured")
             return
+        except Exception as exc:
+            self._signals.error.emit(redact_text(str(exc))[:300] or "Cannot create speech provider")
+            return
+        self._client = self._provider
+        self._supports_streaming = self._provider.capabilities.streaming_stt
         self.reconfigure_hotkey()
         self._hotkey_mgr.start()
         self._hotkey_mgr.wait_ready(timeout=2.0)
@@ -445,80 +456,85 @@ class WorkerThread(QThread):
                 + ", ".join(hotkey_name(v) for v in failures)
                 + " failed to register - another app may already be using it"
             )
-        last_error = ""
         try:
-            self._signals.status.emit("Connecting to Gemini Live...")
-            while not self._should_stop:
-                self._client = GeminiLiveClient(
-                    api_key=api_key,
-                    model=self._settings.get("model") or MODEL,
-                )
-                self._current_language = self._settings.get("language", "auto")
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-                try:
-                    self._loop.run_until_complete(
-                        self._client.connect(
-                            language=self._current_language
-                        )
-                    )
-                    break
-                except Exception as exc:
-                    last_error = str(exc)
-                    if self._loop is not None:
-                        self._loop.close()
-                        self._loop = None
-                    self._client = None
-                    if self._should_stop:
-                        return
-                    if self._sleep(3):
-                        return
-            if self._client is None or not self._client.is_connected:
-                self._signals.error.emit(
-                    "Cannot connect to Gemini Live: "
-                    f"{last_error[:300] or 'unknown error'} - check your API key and internet"
-                )
-                return
-            if not self._settings.get("fast_mode", True):
-                self._processor = TextProcessor(
-                    api_key=api_key,
-                    vocabulary=self._settings.get("custom_vocabulary", ""),
-                )
-            while not self._should_stop:
-                loop = self._loop
-                if loop is None:
-                    return
-                try:
-                    loop.run_until_complete(
-                        self._client.receive_transcript(
-                            on_partial=self._on_partial, on_final=self._on_final
-                        )
-                    )
-                except Exception as exc:
-                    last_error = str(exc)
-                    if self._should_stop:
-                        break
-                    self._signals.status.emit("Connection lost - reconnecting...")
-                if self._should_stop:
-                    break
-                if self._client.is_connected:
-                    continue
-                self._stop_recording_on_connection_lost()
-                if loop is not None:
-                    loop.close()
-                    self._loop = None
-                if not self._reconnect():
-                    self._signals.error.emit(
-                        "Connection lost and could not reconnect: "
-                        f"{last_error[:300] or 'unknown error'}"
-                    )
-                    return
+            if self._supports_streaming:
+                self._run_streaming()
+            else:
+                self._run_batch()
         except Exception as exc:
             self._signals.error.emit(
-                f"Speech engine connection lost: {str(exc)[:300]}"
+                f"Speech engine connection lost: {redact_text(str(exc))[:300]}"
             )
         finally:
             self._cleanup()
+
+    def _run_batch(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._signals.status.emit("Ready")
+        while not self._should_stop:
+            if self._sleep(0.2):
+                break
+
+    def _run_streaming(self) -> None:
+        assert self._provider is not None
+        last_error = ""
+        self._signals.status.emit("Connecting...")
+        while not self._should_stop:
+            self._current_language = self._settings.get("language", "auto")
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_until_complete(
+                    self._provider.start_session(
+                        self._current_language,
+                        self._settings.get("custom_vocabulary", ""),
+                    )
+                )
+                break
+            except ProviderConfigurationError as exc:
+                self._signals.error.emit(exc.message[:300] or "Speech provider is not configured")
+                return
+            except Exception as exc:
+                last_error = redact_text(str(exc))[:300]
+                if self._loop is not None:
+                    self._loop.close()
+                    self._loop = None
+                if self._should_stop:
+                    return
+                if self._sleep(3):
+                    return
+        self._signals.status.emit("Ready")
+        if not self._settings.get("fast_mode", True):
+            self._processor = TextProcessor(
+                api_key=self._settings.get("api_key", ""),
+                vocabulary=self._settings.get("custom_vocabulary", ""),
+            )
+        while not self._should_stop:
+            loop = self._loop
+            if loop is None:
+                return
+            try:
+                loop.run_until_complete(self._provider.pump())
+            except Exception as exc:
+                last_error = redact_text(str(exc))[:300]
+                if self._should_stop:
+                    break
+                self._signals.status.emit("Connection lost - reconnecting...")
+            if self._should_stop:
+                break
+            if getattr(self._provider, "is_session_open", True):
+                continue
+            self._stop_recording_on_connection_lost()
+            if loop is not None:
+                loop.close()
+                self._loop = None
+            if not self._reconnect():
+                self._signals.error.emit(
+                    "Connection lost and could not reconnect: "
+                    f"{last_error[:300] or 'unknown error'}"
+                )
+                return
 
     def _stop_recording_on_connection_lost(self) -> None:
         stopped = False
@@ -534,37 +550,37 @@ class WorkerThread(QThread):
                 self._inject(text)
 
     def _reconnect(self) -> bool:
-        api_key = self._settings.get("api_key", "")
         delays = (2, 4, 8)
-        last_error = ""
         for attempt, delay in enumerate(delays, start=1):
             if self._should_stop:
                 return False
             if self._sleep(delay):
                 return False
+            if self._profile is None:
+                return False
             loop = None
             try:
-                client = GeminiLiveClient(
-                    api_key=api_key,
-                    model=self._settings.get("model") or MODEL,
-                )
+                provider = self._provider_factory(self._profile, self._on_provider_event)
                 self._current_language = self._settings.get("language", "auto")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(
-                    client.connect(language=self._current_language)
+                    provider.start_session(
+                        self._current_language,
+                        self._settings.get("custom_vocabulary", ""),
+                    )
                 )
-            except Exception as exc:
-                last_error = str(exc)
+            except Exception:
                 if loop is not None:
                     loop.close()
                 self._signals.status.emit(
                     f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
                 )
                 continue
-            self._client = client
+            self._provider = provider
+            self._client = provider
             self._loop = loop
-            self._signals.status.emit("Reconnected to Gemini Live")
+            self._signals.status.emit("Ready")
             return True
         return False
 

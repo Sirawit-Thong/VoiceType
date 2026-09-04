@@ -348,22 +348,23 @@ def test_worker_update_settings():
         worker.update_settings()
         assert worker._processor is None
 
-        # Dynamic client disconnect when model/language changes
+        # Dynamic session close when profile/language changes
         mgr.set("api_key", "test-key-123")
-        mgr.set("model", "models/gemini-2.0-flash")
+        mgr.set("provider_id", "gemini_live")
+        mgr.set("provider_profiles", {"gemini_live": {"api_key": "test-key-123", "model": "models/gemini-2.0-flash"}})
         mgr.set("language", "auto")
-        worker._client = MagicMock()
-        worker._client._api_key = "test-key-123"
-        worker._client._model = "models/gemini-2.0-flash"
+        worker._provider = MagicMock()
+        worker._client = worker._provider
+        worker._profile = worker._snapshot_profile()
         worker._current_language = "auto"
         worker._loop = MagicMock()
         worker._loop.is_running.return_value = False
 
-        # Changing language triggers disconnect
+        # Changing language triggers session close
         mgr.set("language", "thai")
         worker.update_settings()
         worker._loop.run_until_complete.assert_called_once_with(
-            worker._client.disconnect()
+            worker._provider.close()
         )
 
 
