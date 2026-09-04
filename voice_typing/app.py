@@ -155,7 +155,10 @@ class WorkerThread(QThread):
         if mode == "push_to_talk":
             self._start_recording()
         elif self._recording:
-            self._finalize_and_inject()
+            if self._supports_streaming:
+                self._finalize_and_inject()
+            else:
+                self._finish_batch_turn()
         else:
             self._start_recording()
 
@@ -520,9 +523,7 @@ class WorkerThread(QThread):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._signals.status.emit("Ready")
-        while not self._should_stop:
-            if self._sleep(0.2):
-                break
+        self._loop.run_forever()
 
     def _run_streaming(self) -> None:
         assert self._provider is not None
@@ -759,7 +760,10 @@ class VoiceTypeApp:
 
     def _stop_recording(self) -> None:
         if self._worker is not None:
-            self._worker._finalize_and_inject()
+            if getattr(self._worker, "_supports_streaming", True):
+                self._worker._finalize_and_inject()
+            else:
+                self._worker._finish_batch_turn()
 
     def _on_recording_started(self) -> None:
         self._tray.update_recording_state(True)
