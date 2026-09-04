@@ -1089,7 +1089,16 @@ class SettingsWindow(QDialog):
         except Exception:
             pass
         self._settings.set("fast_mode", self._fast_mode.isChecked())
-        self._settings.set("text_cleanup", {"enabled": not self._fast_mode.isChecked(), "provider_id": provider_id})
+        prev_cleanup = self._settings.get("text_cleanup", {})
+        prev_id = ""
+        if isinstance(prev_cleanup, dict):
+            prev_id = str(prev_cleanup.get("provider_id", "") or "").strip()
+        enabled = not self._fast_mode.isChecked()
+        if prev_id and prev_id in PROVIDER_PRESETS:
+            resolved_id = prev_id
+        else:
+            resolved_id = provider_id if enabled else ""
+        self._settings.set("text_cleanup", {"enabled": enabled, "provider_id": resolved_id})
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
