@@ -164,4 +164,105 @@ def test_status_strings_carry_no_key_material(monkeypatch):
     assert "test-key-1" not in cs.last_backend_status()
 
 
-# --- migration + resolve tests appended in a later task ---
+def test_migrate_moves_keys_and_blanks_json(monkeypatch):
+    store = {}
+    _install_fake_keyring(monkeypatch, store)
+    data = {
+        "api_key": "test-legacy-key",
+        "provider_profiles": {
+            "groq": {"api_key": "test-key-1", "model": "whisper-large-v3-turbo"},
+            "deepgram": {"api_key": "test-key-2", "model": "nova-2"},
+        },
+    }
+    migrated = cs.migrate_plaintext_keys(data)
+    assert sorted(migrated) == ["deepgram", "gemini_live", "groq"]
+    assert store[("VoiceType", "voicetype/groq/api_key")] == "test-key-1"
+    assert store[("VoiceType", "voicetype/deepgram/api_key")] == "test-key-2"
+    assert store[("VoiceType", "voicetype/gemini_live/api_key")] == "test-legacy-key"
+    assert data["provider_profiles"]["groq"]["api_key"] == ""
+    assert data["provider_profiles"]["deepgram"]["api_key"] == ""
+    assert data["api_key"] == ""
+    assert data["provider_profiles"]["groq"]["model"] == "whisper-large-v3-turbo"
+
+
+def test_migrate_is_idempotent(monkeypatch):
+    store = {}
+    _install_fake_keyring(monkeypatch, store)
+    data = {"api_key": "", "provider_profiles": {"groq": {"api_key": "test-key-1"}}}
+    assert cs.migrate_plaintext_keys(data) == ["groq"]
+    assert cs.migrate_plaintext_keys(data) == []
+    assert store[("VoiceType", "voicetype/groq/api_key")] == "test-key-1"
+
+
+def test_migrate_partial_failure_keeps_failed_key(monkeypatch):
+    store = {}
+    calls = []
+
+    fake = _install_fake_keyring(monkeypatch, store)
+    orig_set = fake.set_password
+
+    def flaky_set(service, account, value):
+        calls.append(account)
+        if account == "voicetype/deepgram/api_key":
+            raise RuntimeError("vault boom")
+        return orig_set(service, account, value)
+
+    fake.set_password = flaky_set
+    data = {
+        "api_key": "",
+        "provider_profiles": {
+            "groq": {"api_key": "test-key-1"},
+            "deepgram": {"api_key": "test-key-2"},
+        },
+    }
+    migrated = cs.migrate_plaintext_keys(data)
+    assert migrated == ["groq"]
+    assert data["provider_profiles"]["groq"]["api_key"] == ""
+    assert data["provider_profiles"]["deepgram"]["api_key"] == "test-key-2"
+    assert store.get(("VoiceType", "voicetype/groq/api_key")) == "test-key-1"
+    assert ("VoiceType", "voicetype/deepgram/api_key") not in store
+
+
+def test_migrate_no_backend_does_nothing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    data = {"api_key": "test-legacy-key", "provider_profiles": {"groq": {"api_key": "test-key-1"}}}
+    assert cs.migrate_plaintext_keys(data) == []
+    assert data["provider_profiles"]["groq"]["api_key"] == "test-key-1"
+    assert data["api_key"] == "test-legacy-key"
+
+
+def test_resolve_vault_wins_over_json(monkeypatch):
+    store = {("VoiceType", "voicetype/groq/api_key"): "test-vault-key"}
+    _install_fake_keyring(monkeypatch, store)
+    data = {"provider_profiles": {"groq": {"api_key": "test-json-key"}}}
+    assert cs.resolve_profile_key(data, "groq") == "test-vault-key"
+
+
+def test_resolve_falls_back_to_json_without_backend(monkeypatch):
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    data = {"provider_profiles": {"groq": {"api_key": "test-json-key"}}}
+    assert cs.resolve_profile_key(data, "groq") == "test-json-key"
+
+
+def test_resolve_uses_json_when_vault_empty_but_available(monkeypatch):
+    # Partial-failure shape: backend works, but this provider never migrated.
+    _install_fake_keyring(monkeypatch, {})
+    data = {"provider_profiles": {"groq": {"api_key": "test-json-key"}}}
+    assert cs.resolve_profile_key(data, "groq") == "test-json-key"
+
+
+def test_resolve_empty_vault_and_empty_json(monkeypatch):
+    _install_fake_keyring(monkeypatch, {})
+    assert cs.resolve_profile_key({"provider_profiles": {"groq": {"api_key": ""}}}, "groq") == ""
+    assert cs.resolve_profile_key({}, "groq") == ""
+    assert cs.resolve_profile_key({"provider_profiles": {}}, "") == ""
+
+
+def test_posture_token_values(monkeypatch):
+    _install_fake_keyring(monkeypatch, {})
+    assert cs.posture_token() == "credential_store=vault"
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    assert cs.posture_token() == "credential_store=fallback(plaintext)"
