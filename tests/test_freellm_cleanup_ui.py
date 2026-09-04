@@ -58,3 +58,65 @@ def test_cleanup_enabled_unchecks_fast_mode_on_load(tmp_path):
     mgr.save()
     win = SettingsWindow(mgr)
     assert win._fast_mode.isChecked() is False
+
+
+def test_save_preserves_distinct_cleanup_provider_when_stt_switched(tmp_path):
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("text_cleanup", {"enabled": True, "provider_id": "freellm"})
+    mgr.save()
+    win = SettingsWindow(mgr)
+    win._provider_combo.setCurrentIndex(win._provider_combo.findData("groq"))
+    win._fast_mode.setChecked(False)
+    win._save_and_close()
+    assert mgr.get("provider_id") == "groq"
+    assert mgr.get("text_cleanup") == {"enabled": True, "provider_id": "freellm"}
+
+
+def test_save_preserves_cleanup_id_when_disabling(tmp_path):
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("text_cleanup", {"enabled": True, "provider_id": "freellm"})
+    mgr.save()
+    win = SettingsWindow(mgr)
+    win._provider_combo.setCurrentIndex(win._provider_combo.findData("groq"))
+    win._fast_mode.setChecked(True)
+    win._save_and_close()
+    assert mgr.get("text_cleanup") == {"enabled": False, "provider_id": "freellm"}
+    assert mgr.get("fast_mode") is True
+
+
+def test_save_falls_back_to_stt_provider_when_no_previous_id(tmp_path):
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("text_cleanup", {"enabled": False, "provider_id": ""})
+    mgr.save()
+    win = SettingsWindow(mgr)
+    win._provider_combo.setCurrentIndex(win._provider_combo.findData("groq"))
+    win._fast_mode.setChecked(False)
+    win._save_and_close()
+    assert mgr.get("text_cleanup") == {"enabled": True, "provider_id": "groq"}
+
+
+def test_save_falls_back_to_empty_when_disabling_with_no_previous_id(tmp_path):
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("text_cleanup", {"enabled": False, "provider_id": ""})
+    mgr.save()
+    win = SettingsWindow(mgr)
+    win._provider_combo.setCurrentIndex(win._provider_combo.findData("groq"))
+    win._fast_mode.setChecked(True)
+    win._save_and_close()
+    assert mgr.get("text_cleanup") == {"enabled": False, "provider_id": ""}
+
+
+def test_save_falls_back_to_stt_provider_when_previous_id_unknown(tmp_path):
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("text_cleanup", {"enabled": True, "provider_id": "no_such_provider"})
+    mgr.save()
+    win = SettingsWindow(mgr)
+    win._provider_combo.setCurrentIndex(win._provider_combo.findData("groq"))
+    win._fast_mode.setChecked(False)
+    win._save_and_close()
+    assert mgr.get("text_cleanup") == {"enabled": True, "provider_id": "groq"}
