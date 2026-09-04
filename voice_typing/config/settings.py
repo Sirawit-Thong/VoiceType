@@ -60,6 +60,7 @@ class SettingsManager:
             self.save()
             return
         self.migrate_provider_profiles()
+        self.migrate_keys_to_vault()
 
     def migrate_provider_profiles(self) -> bool:
         """Migrate legacy top-level api_key/model into the Gemini profile.
@@ -121,6 +122,31 @@ class SettingsManager:
         if changed:
             self.save()
         return changed
+
+    def migrate_keys_to_vault(self) -> list[str]:
+        """Move plaintext API keys into the OS vault once, then save.
+
+        Runs after migrate_provider_profiles() on every load. When no
+        secure backend exists it does nothing (fallback mode keeps
+        plaintext). When at least one key migrated, saves once. Never
+        raises: vault errors must not break settings loading.
+        """
+        try:
+            from voice_typing.config import credential_store as _cs
+        except ImportError:
+            return []
+        try:
+            if not _cs.is_secure_backend_available():
+                return []
+            migrated = _cs.migrate_plaintext_keys(self._data)
+        except Exception:
+            return []
+        if migrated:
+            try:
+                self.save()
+            except Exception:
+                pass
+        return migrated
 
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

@@ -266,3 +266,55 @@ def test_posture_token_values(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring", None)
     cs.refresh_backend_cache()
     assert cs.posture_token() == "credential_store=fallback(plaintext)"
+
+
+def test_settings_load_migrates_keys_once_and_saves(monkeypatch, tmp_path):
+    import json
+
+    from voice_typing.config.settings import SettingsManager
+
+    store = {}
+    _install_fake_keyring(monkeypatch, store)
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"api_key": "test-legacy-key", "model": "models/legacy-model"}),
+        encoding="utf-8",
+    )
+    mgr = SettingsManager(path)
+    mgr.load()
+    assert store.get(("VoiceType", "voicetype/gemini_live/api_key")) == "test-legacy-key"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["provider_profiles"]["gemini_live"]["api_key"] == ""
+    assert saved["api_key"] == ""
+    before = path.read_text(encoding="utf-8")
+    mgr2 = SettingsManager(path)
+    mgr2.load()
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_settings_load_fallback_keeps_plaintext(monkeypatch, tmp_path):
+    import json
+
+    from voice_typing.config.settings import SettingsManager
+
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"provider_profiles": {"groq": {"api_key": "test-key-1"}}}),
+        encoding="utf-8",
+    )
+    mgr = SettingsManager(path)
+    mgr.load()
+    assert mgr.get("provider_profiles")["groq"]["api_key"] == "test-key-1"
+    assert cs.resolve_profile_key(mgr.as_dict(), "groq") == "test-key-1"
+
+
+def test_settings_load_never_breaks_on_vault_error(monkeypatch, tmp_path):
+    from voice_typing.config.settings import SettingsManager
+
+    _install_fake_keyring(monkeypatch, {}, fail_probe=RuntimeError("vault boom"))
+    path = tmp_path / "settings.json"
+    mgr = SettingsManager(path)
+    mgr.load()
+    assert mgr.get("mode") == "push_to_talk"
