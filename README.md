@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/AI%20Model-Gemini%20Live%20API-orange.svg" alt="Gemini Live" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg" alt="Windows" />
   <img src="https://img.shields.io/badge/Tests-112%20Passed-success.svg" alt="Tests" />
+    <img src="https://github.com/Sirawit-Thong/VoiceType/actions/workflows/ci.yml/badge.svg" alt="CI" />
 </p>
 
 ---
