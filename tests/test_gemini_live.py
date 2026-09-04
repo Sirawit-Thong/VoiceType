@@ -148,6 +148,7 @@ def test_fetch_live_models_fallback_when_no_bidi():
 
 def test_fetch_live_models_http_error():
     import urllib.error
+
     from voice_typing.speech.gemini_live import fetch_live_models
 
     error = urllib.error.HTTPError(
@@ -158,7 +159,6 @@ def test_fetch_live_models_http_error():
         fp=MagicMock(read=lambda: b'{"error": "API key invalid"}'),
     )
 
-    with patch("urllib.request.urlopen", side_effect=error):
-        with pytest.raises(RuntimeError, match="API error 403"):
-            fetch_live_models(api_key="invalid-key")
+    with patch("urllib.request.urlopen", side_effect=error), pytest.raises(RuntimeError, match="API error 403"):
+        fetch_live_models(api_key="invalid-key")
 

@@ -6,7 +6,7 @@ import ctypes.wintypes as wintypes
 import logging
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -16,6 +16,9 @@ WM_QUIT = 0x0012
 WM_UNREGISTER = 0x0400
 WM_REGISTER = 0x0401
 MOD_NONE = 0x0000
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
 
 # Mouse Virtual Keys
 VK_MBUTTON = 0x04
@@ -142,6 +145,7 @@ class HotkeyManager:
     def __init__(self) -> None:
         self._hotkeys: dict[int, Callable[[int], None]] = {}
         self._release_callbacks: dict[int, Callable[[int], None]] = {}
+        self._modifiers: dict[int, int] = {}
         self._registration_failures: list[int] = []
         self._active_release_waiters: set[int] = set()
         self._waiters_lock = threading.Lock()
@@ -161,8 +165,10 @@ class HotkeyManager:
         vk_code: int,
         callback: Callable[[int], None],
         on_release: Callable[[int], None] | None = None,
+        modifiers: int = MOD_NONE,
     ) -> None:
         self._hotkeys[vk_code] = callback
+        self._modifiers[vk_code] = modifiers
         if on_release is not None:
             self._release_callbacks[vk_code] = on_release
         else:
@@ -173,6 +179,7 @@ class HotkeyManager:
     def unregister(self, vk_code: int) -> None:
         self._hotkeys.pop(vk_code, None)
         self._release_callbacks.pop(vk_code, None)
+        self._modifiers.pop(vk_code, None)
         self._mouse_pressed.pop(vk_code, None)
         if self._running and self._started.is_set():
             user32.PostThreadMessageW(self._thread_id, WM_UNREGISTER, vk_code, 0)
@@ -212,10 +219,9 @@ class HotkeyManager:
         self._started.set()
 
         for vk in list(self._hotkeys.keys()):
-            if vk not in MOUSE_VKS:
-                if user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
-                    self._registration_failures.append(vk)
-                    logging.warning("Failed to register hotkey VK=0x%X", vk)
+            if vk not in MOUSE_VKS and user32.RegisterHotKey(None, vk, self._modifiers.get(vk, MOD_NONE), vk) == 0:
+                self._registration_failures.append(vk)
+                logging.warning("Failed to register hotkey VK=0x%X", vk)
         msg = wintypes.MSG()
         while self._running:
             result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
@@ -245,7 +251,7 @@ class HotkeyManager:
             elif msg.message == WM_REGISTER:
                 vk = msg.wParam & 0xFFFFFFFF
                 if vk not in MOUSE_VKS:
-                    if user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
+                    if user32.RegisterHotKey(None, vk, self._modifiers.get(vk, MOD_NONE), vk) == 0:
                         self._registration_failures.append(vk)
                         logging.warning("Failed to register hotkey VK=0x%X", vk)
                     else:

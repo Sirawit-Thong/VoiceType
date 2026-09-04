@@ -9,14 +9,50 @@ dependencies = [
     "websockets>=12.0",
     "pyperclip>=1.8.2",
     "aiohttp>=3.9.0",
+    "numpy>=1.26",
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.8.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# Pragmatic gate: pyflakes, pycodestyle, isort, pyupgrade, simple returns,
+# flake8-simplify, unused-noqa. Deliberately excluded: BLE (fail-open
+# bare-except is this codebase's contract), S (bandit try-except-pass is
+# intentional fallback), LOG (root-logger strategy undecided),
+# SIM105 (contextlib.suppress would hide intentional fallbacks).
+select = ["E", "F", "I", "UP", "RET", "SIM", "RUF100", "W"]
+# E501 ignored for now: 48 pre-existing long lines (mostly Qt UI code);
+# wrap incrementally — tightening later. SIM105: see above.
+ignore = ["E501", "SIM105"]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt test files must set QT_QPA_PLATFORM before importing PySide6.
+"tests/*.py" = ["E402"]
+
+[tool.coverage.run]
+source = ["voice_typing"]
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.2",
+]

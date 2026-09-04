@@ -1,5 +1,5 @@
-from unittest.mock import MagicMock, call, patch
 import time
+from unittest.mock import call, patch
 
 from voice_typing.windows.text_injector import (
     KEYEVENTF_KEYUP,
@@ -18,6 +18,27 @@ def test_injector_initialization():
     custom = TextInjector(restore_delay=0.5, typing_speed=0.05)
     assert custom.restore_delay == 0.5
     assert custom.typing_speed == 0.05
+
+
+def test_delete_chars_zero_is_noop(monkeypatch):
+    from voice_typing.windows import text_injector as ti
+    calls = []
+    monkeypatch.setattr(ti, "_send_key_down", lambda vk: calls.append(("down", vk)))
+    monkeypatch.setattr(ti, "_send_key_up", lambda vk: calls.append(("up", vk)))
+    inj = ti.TextInjector()
+    assert inj.delete_chars(0) is True
+    assert inj.delete_chars(-3) is True
+    assert calls == []
+
+
+def test_delete_chars_sends_n_backspaces(monkeypatch):
+    from voice_typing.windows import text_injector as ti
+    calls = []
+    monkeypatch.setattr(ti, "_send_key_down", lambda vk: calls.append(("down", vk)))
+    monkeypatch.setattr(ti, "_send_key_up", lambda vk: calls.append(("up", vk)))
+    inj = ti.TextInjector()
+    assert inj.delete_chars(3) is True
+    assert calls == [("down", 0x08), ("up", 0x08)] * 3
 
 
 def test_auto_space_adds_space_between_utterances():
@@ -128,11 +149,14 @@ def test_inject_fallback_logic():
     injector = TextInjector()
 
     with patch.object(injector, "_clipboard_inject", return_value=True), \
+         patch.object(injector, "_sendinput_batch") as mock_batch, \
          patch.object(injector, "_sendinput_inject") as mock_sendinput:
         assert injector.inject("hello") is True
+        mock_batch.assert_not_called()
         mock_sendinput.assert_not_called()
 
     with patch.object(injector, "_clipboard_inject", return_value=False), \
+         patch.object(injector, "_sendinput_batch", return_value=False), \
          patch.object(injector, "_sendinput_inject", return_value=True) as mock_sendinput:
         assert injector.inject("hello") is True
         mock_sendinput.assert_called_once_with("hello", typing_speed=None)

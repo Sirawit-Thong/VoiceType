@@ -63,3 +63,9 @@ Thumbs.db
 .superpowers/
 docs/
 settings.json
+
+# Session & Task Artifacts
+.tmp/
+
+# Lockfiles (managed by uv, not committed)
+uv.lock

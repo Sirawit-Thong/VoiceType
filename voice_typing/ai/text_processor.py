@@ -45,41 +45,40 @@ class TextProcessor:
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=3),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            result = "".join(p.get("text", "") for p in parts).strip()
-                            if result:
-                                return result
-                    elif resp.status == 404 and model_name != "gemini-1.5-flash":
-                        # Try fallback model
-                        fb_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self._api_key}"
-                        async with session.post(
-                            fb_url,
-                            json=payload,
-                            timeout=aiohttp.ClientTimeout(total=3),
-                        ) as fb_resp:
-                            if fb_resp.status == 200:
-                                fb_data = await fb_resp.json()
-                                fb_cands = fb_data.get("candidates", [])
-                                if fb_cands:
-                                    fb_parts = fb_cands[0].get("content", {}).get("parts", [])
-                                    fb_result = "".join(p.get("text", "") for p in fb_parts).strip()
-                                    if fb_result:
-                                        return fb_result
-                            logging.debug("TextProcessor fallback returned HTTP %s", fb_resp.status)
-                    else:
-                        logging.debug(
-                            "TextProcessor API returned HTTP %s for model %s", resp.status, model_name
-                        )
+            async with aiohttp.ClientSession() as session, session.post(
+                url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        result = "".join(p.get("text", "") for p in parts).strip()
+                        if result:
+                            return result
+                elif resp.status == 404 and model_name != "gemini-1.5-flash":
+                    # Try fallback model
+                    fb_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self._api_key}"
+                    async with session.post(
+                        fb_url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=3),
+                    ) as fb_resp:
+                        if fb_resp.status == 200:
+                            fb_data = await fb_resp.json()
+                            fb_cands = fb_data.get("candidates", [])
+                            if fb_cands:
+                                fb_parts = fb_cands[0].get("content", {}).get("parts", [])
+                                fb_result = "".join(p.get("text", "") for p in fb_parts).strip()
+                                if fb_result:
+                                    return fb_result
+                        logging.debug("TextProcessor fallback returned HTTP %s", fb_resp.status)
+                else:
+                    logging.debug(
+                        "TextProcessor API returned HTTP %s for model %s", resp.status, model_name
+                    )
         except Exception:
             logging.debug(
                 "TextProcessor failed; returning raw text", exc_info=True

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Fast, accurate, and seamless real-time voice-to-text for Windows powered by Google Gemini Live WebSocket API.</strong>
+  <strong>Fast, accurate, and seamless voice-to-text for Windows with pluggable STT providers: Gemini Live, OpenAI, Groq, Deepgram, and any OpenAI-compatible endpoint.</strong>
 </p>
 
 <p align="center">
@@ -13,7 +13,8 @@
   <img src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt-brightgreen.svg" alt="PySide6" />
   <img src="https://img.shields.io/badge/AI%20Model-Gemini%20Live%20API-orange.svg" alt="Gemini Live" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg" alt="Windows" />
-  <img src="https://img.shields.io/badge/Tests-112%20Passed-success.svg" alt="Tests" />
+  <img src="https://img.shields.io/badge/Tests-265%20Passed-success.svg" alt="Tests" />
+    <img src="https://github.com/Sirawit-Thong/VoiceType/actions/workflows/ci.yml/badge.svg" alt="CI" />
 </p>
 
 ---
@@ -21,7 +22,7 @@
 ## ✨ Features
 
 ### ⚡ Real-Time Streaming Speech Recognition
-* **Gemini Live WebSocket Engine**: Streams raw PCM audio in real-time with sub-second transcription response.
+* **Pluggable STT Engine**: Gemini Live, OpenAI Realtime, and Deepgram stream mic audio with sub-second partial results; Groq, OpenAI-compatible endpoints, and the FreeLLM preset transcribe on hotkey release.
 * **Fast Mode**: Instantly injects transcribed text with zero latency directly into any active application (Chrome, VS Code, Discord, Word, Line, Notion, etc.).
 
 ### 💊 Modern Dynamic Capsule Floating UI
@@ -87,6 +88,10 @@ python -m voice_typing.app
 
 On first launch, enter your **Gemini API Key** in the Setup Wizard or Settings window.
 
+### 🔐 API Key Storage (Windows Credential Manager)
+
+Per-provider API keys are stored in **Windows Credential Manager** (DPAPI-backed) under service `VoiceType` with one account per provider (`voicetype/{provider_id}/api_key`, e.g. `voicetype/groq/api_key`). Existing plaintext keys in `%APPDATA%/VoiceType/settings.json` migrate into the vault once and the file copies are blanked; non-secret settings stay in the file as before. If no usable credential backend is found, the app keeps working with plaintext `settings.json` and Settings shows a persistent warning with **Retry** and **Learn more** actions. Resetting settings to defaults also deletes the matching vault entries; deleting `settings.json` alone does not — remove leftovers under Control Panel > Credential Manager > Windows Credentials > VoiceType.
+
 ---
 
 ## 📦 Build Standalone Executable (.exe)
@@ -123,7 +128,8 @@ VoiceType/
 │   ├── audio/              # Microphone capture & device enumeration
 │   │   └── recorder.py
 │   ├── config/             # Configuration management & asset resolver
-│   │   └── settings.py
+│   │   ├── settings.py
+│   │   └── credential_store.py  # Windows Credential Manager vault boundary (API keys)
 │   ├── speech/             # Gemini Live WebSocket client & audio streaming
 │   │   ├── engine.py
 │   │   └── gemini_live.py
@@ -136,7 +142,7 @@ VoiceType/
 │   │   ├── startup.py
 │   │   └── text_injector.py
 │   └── app.py              # Main application entry point & coordinator
-├── tests/                  # 112+ Unit & Integration Tests (pytest)
+├── tests/                  # 265+ Unit & Integration Tests (pytest)
 ├── build.spec              # PyInstaller build specification
 ├── pyproject.toml          # Project configuration & dependencies
 └── README.md               # Project documentation
@@ -152,7 +158,7 @@ Run the automated test suite with `pytest`:
 pytest -v
 ```
 
-All 112 tests covering audio buffers, text injection, hotkey handling, settings persistence, and UI components should pass.
+All 265 tests covering audio buffers, text injection, hotkey handling, settings persistence, and UI components should pass.
 
 ## 📄 License & Terms of Use
 

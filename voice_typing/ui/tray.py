@@ -1,8 +1,6 @@
 # voice_typing/ui/tray.py
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import (
     QAction,
@@ -14,6 +12,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+
 from voice_typing.config.settings import get_asset_path
 
 
@@ -29,6 +28,8 @@ class TraySignals(QObject):
     clear_history = Signal()
     re_inject = Signal(str)
     show_status_bar = Signal()
+    open_history = Signal()
+    check_update = Signal()
 
 
 class TrayIcon:
@@ -141,27 +142,9 @@ class TrayIcon:
         fast_action.triggered.connect(self._toggle_fast_mode)
         self._menu.addAction(fast_action)
 
-        history_menu = self._menu.addMenu("ล่าสุด (Recent)")
-        if self._history:
-            for full_text in reversed(self._history[-10:]):
-                if len(full_text) > 35:
-                    label = full_text[:35].rstrip() + "…"
-                else:
-                    label = full_text
-                item = QAction(label, history_menu)
-                item.setToolTip(full_text)
-                item.triggered.connect(
-                    lambda checked=False, text=full_text: self.signals.re_inject.emit(text)
-                )
-                history_menu.addAction(item)
-            history_menu.addSeparator()
-            clear_act = QAction("Clear History (ล้างประวัติ)", history_menu)
-            clear_act.triggered.connect(self.signals.clear_history.emit)
-            history_menu.addAction(clear_act)
-        else:
-            empty_action = QAction("— ว่างเปล่า —", history_menu)
-            empty_action.setEnabled(False)
-            history_menu.addAction(empty_action)
+        history_act = QAction("Browse History...", self._menu)
+        history_act.triggered.connect(self.signals.open_history.emit)
+        self._menu.addAction(history_act)
 
         self._menu.addSeparator()
         settings_action = QAction("Settings", self._menu)
@@ -170,8 +153,12 @@ class TrayIcon:
 
         test_action = QAction("Test Microphone", self._menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
-        menu_items = self._menu.addAction(test_action)
+        self._menu.addAction(test_action)
 
+        self._menu.addSeparator()
+        update_action = QAction("Check for Updates...", self._menu)
+        update_action.triggered.connect(self.signals.check_update.emit)
+        self._menu.addAction(update_action)
         self._menu.addSeparator()
         exit_action = QAction("Exit", self._menu)
         exit_action.triggered.connect(self.signals.exit_app.emit)
@@ -204,8 +191,8 @@ class TrayIcon:
         self._fast_mode = fast
         self._build_menu()
 
-    def set_history(self, items: list[str]) -> None:
-        self._history = list(items)
+    def set_history(self, items: list) -> None:
+        self._history = items
         if self._menu is not None:
             self._build_menu()
 
@@ -225,10 +212,9 @@ class TrayIcon:
             QSystemTrayIcon.ActivationReason.DoubleClick,
         ):
             self.signals.show_status_bar.emit()
-        elif reason == QSystemTrayIcon.ActivationReason.Context:
-            if self._menu is not None:
-                self._build_menu()
-                self._menu.popup(QCursor.pos())
+        elif reason == QSystemTrayIcon.ActivationReason.Context and self._menu is not None:
+            self._build_menu()
+            self._menu.popup(QCursor.pos())
 
     def hide(self) -> None:
         if self._tray is not None:

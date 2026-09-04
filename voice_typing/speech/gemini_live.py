@@ -6,7 +6,7 @@ import base64
 import json
 import urllib.error
 import urllib.request
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import quote
 
 import websockets
@@ -113,15 +113,14 @@ class GeminiLiveClient:
                 if text and not turn_complete:
                     self._has_unfinalized = True
                     on_partial(text)
-                if turn_complete:
-                    if text or self._has_unfinalized:
-                        self._has_unfinalized = False
-                        on_final(text)
+                if turn_complete and (text or self._has_unfinalized):
+                    self._has_unfinalized = False
+                    on_final(text)
                 elif "modelTurn" in sc:
                     if self._has_unfinalized:
                         self._has_unfinalized = False
                         on_final("")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         except Exception:
             self._connected = False
@@ -144,8 +143,8 @@ class GeminiLiveClient:
         self._ws = None
         if ws is not None:
             try:
-                if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:
-                    ws.protocol.transport.close()
+                if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:  # type: ignore[union-attr]
+                    ws.protocol.transport.close()  # type: ignore[union-attr]
                 elif hasattr(ws, "transport") and ws.transport is not None:
                     ws.transport.close()
             except Exception:

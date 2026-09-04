@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -84,7 +83,7 @@ async def test_fallback_on_api_error_status():
 async def test_fallback_on_timeout():
     processor = TextProcessor(api_key="test-key")
     mock_post_cm = MagicMock()
-    mock_post_cm.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
+    mock_post_cm.__aenter__ = AsyncMock(side_effect=TimeoutError())
     mock_post_cm.__aexit__ = AsyncMock(return_value=None)
 
     with patch("aiohttp.ClientSession.post", return_value=mock_post_cm):

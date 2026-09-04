@@ -1,11 +1,10 @@
 # voice_typing/audio/recorder.py
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
-import sounddevice as sd
 import numpy as np
-
+import sounddevice as sd
 
 SAMPLE_RATE = 16000
 CHANNELS = 1

@@ -4,23 +4,37 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
-import math
 import sys
 import threading
 import time
 import winsound
-from array import array
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, QObject
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QMessageBox
 
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
+from voice_typing.providers.audio import pcm_to_wav_bytes
+from voice_typing.providers.cleanup import (
+    GeminiCleanupProvider,
+    OpenAIChatCleanupProvider,
+)
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    EventKind,
+    ProviderConfigurationError,
+    ProviderProfile,
+    SpeechProvider,
+    TranscriptEvent,
+    build_profile,
+)
+from voice_typing.providers.presets import PROVIDER_PRESETS
+from voice_typing.providers.redaction import redact_text
+from voice_typing.providers.registry import Factory, default_factory
 from voice_typing.speech.engine import TranscriptBuffer
-from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
@@ -60,12 +74,20 @@ class WorkerSignals(QObject):
     status = Signal(str)
     audio_level = Signal(float)
     history_changed = Signal(list)
+    preview_requested = Signal(str)
 
 
 class WorkerThread(QThread):
-    def __init__(self, settings: SettingsManager) -> None:
+    def __init__(
+        self,
+        settings: SettingsManager,
+        provider_factory: Factory | None = None,
+        cleanup_provider=None,
+    ) -> None:
         super().__init__()
         self._settings = settings
+        self._provider_factory: Factory = provider_factory or default_factory
+        self._injected_cleanup_provider = cleanup_provider
         self._signals = WorkerSignals()
         self._recorder = AudioRecorder()
         self._buffer = TranscriptBuffer()
@@ -73,15 +95,26 @@ class WorkerThread(QThread):
         self._hotkey_mgr = HotkeyManager()
         self._current_hotkey_vk: int | None = None
         self._current_language: str = "auto"
-        self._client: GeminiLiveClient | None = None
+        self._provider: SpeechProvider | None = None
+        self._client: SpeechProvider | None = None
+        self._profile: ProviderProfile | None = None
+        self._supports_streaming = True
+        self._pcm_buffer = bytearray()
+        self._cleanup_provider = self._injected_cleanup_provider
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
         self._recording = False
         self._should_stop = False
+        self._history_dir_ready = False
+        self._last_saved_snapshot: str | None = None
+        self._history_timer: threading.Timer | None = None
+        self._history_debounce_sec = 0.5
         self._last_injected = ""
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
+        self._undo_available = False
+        self._current_undo_vk: int | None = None
         self._last_level = 0.0
         self._silence_threshold: float = self._settings.get("silence_threshold", 0.005)
         self._history_path = Path(self._settings._path).parent / "history.json"
@@ -90,34 +123,43 @@ class WorkerThread(QThread):
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         if self._recording:
             self._update_audio_level(audio_bytes)
-        client = self._client
+            with self._lock:
+                self._pcm_buffer.extend(audio_bytes)
+        provider = self._provider
         loop = self._loop
-        if client is not None and client.is_connected and loop is not None:
+        if (
+            provider is not None
+            and self._supports_streaming
+            and loop is not None
+            and getattr(provider, "is_session_open", True)
+        ):
+            # Perf: skip silent chunks on the network path only.
+            # Local pcm_buffer + level meter above still run so batch
+            # turns and UI stay correct; we just save bandwidth/cost.
+            try:
+                from voice_typing.audio.levels import is_silence
+
+                if is_silence(audio_bytes, self._silence_threshold) is True:
+                    return
+            except Exception:
+                pass
             future = asyncio.run_coroutine_threadsafe(
-                client.send_audio(audio_bytes), loop
+                provider.send_audio(audio_bytes), loop
             )
             future.add_done_callback(self._on_audio_sent)
 
     def _update_audio_level(self, audio_bytes: bytes) -> None:
         # Keep this fast: it runs on the audio callback thread for every chunk.
-        if len(audio_bytes) < 2 or len(audio_bytes) % 2 != 0:
+        # Delegates to pure vectorized helpers in audio/levels.py (numpy).
+        from voice_typing.audio.levels import calculate_audio_level
+
+        emit, new_last = calculate_audio_level(
+            audio_bytes, self._last_level, self._silence_threshold
+        )
+        if emit is None:
             return
-        samples = array("h")
-        samples.frombytes(audio_bytes)
-        if not samples:
-            return
-        sum_sq = 0
-        for sample in samples:
-            sum_sq += sample * sample
-        normalized = math.sqrt(sum_sq / len(samples)) / 32768.0
-        if normalized < self._silence_threshold:
-            self._last_level *= 0.9
-            self._signals.audio_level.emit(0.0)
-            return
-        # Gentle curve plus attack/release smoothing so the meter feels lively.
-        level = max(normalized ** 0.5, self._last_level * 0.75)
-        self._last_level = level
-        self._signals.audio_level.emit(max(0.0, min(1.0, level)))
+        self._last_level = new_last
+        self._signals.audio_level.emit(emit)
 
     def _on_audio_sent(self, future) -> None:
         try:
@@ -130,14 +172,60 @@ class WorkerThread(QThread):
         if mode == "push_to_talk":
             self._start_recording()
         elif self._recording:
-            self._finalize_and_inject()
+            if self._supports_streaming:
+                self._finalize_and_inject()
+            else:
+                self._finish_batch_turn()
         else:
             self._start_recording()
 
     def _on_hotkey_release(self, vk_code: int) -> None:
-        self._finalize_and_inject()
+        if self._supports_streaming:
+            self._finalize_and_inject()
+        else:
+            self._finish_batch_turn()
+
+    def _finish_batch_turn(self) -> None:
+        with self._lock:
+            if not self._recording:
+                return
+            try:
+                self._recorder.stop()
+            except Exception:
+                pass
+            self._recording = False
+            pcm = bytes(self._pcm_buffer)
+            self._pcm_buffer.clear()
+        self._signals.recording_stopped.emit()
+        if not pcm:
+            self._signals.status.emit("Ready")
+            return
+        try:
+            wav_bytes = pcm_to_wav_bytes(pcm)
+        except ValueError:
+            self._signals.status.emit("Ready")
+            return
+        provider = self._provider
+        loop = self._loop
+        if provider is None or loop is None:
+            self._signals.error.emit("Speech provider is not ready")
+            return
+        self._signals.status.emit("Transcribing...")
+        try:
+            future = asyncio.run_coroutine_threadsafe(provider.finish_turn(wav_bytes), loop)
+            event = future.result(timeout=60)
+        except Exception as exc:
+            self._signals.error.emit(redact_text(str(exc))[:300] or "Transcription failed")
+            self._signals.status.emit("Ready")
+            return
+        if event is not None and event.kind == EventKind.FINAL and event.text.strip():
+            self._on_provider_event(event)
+        elif event is not None and event.error is not None:
+            self._on_provider_error(event.error)
+        self._signals.status.emit("Ready")
 
     def reconfigure_hotkey(self) -> None:
+        from voice_typing.windows.hotkey import MOD_CONTROL, MOD_SHIFT
         new_vk = self._settings.get("hotkey", DEFAULT_HOTKEY)
         if self._current_hotkey_vk is not None and self._current_hotkey_vk != new_vk:
             self._hotkey_mgr.unregister(self._current_hotkey_vk)
@@ -149,11 +237,28 @@ class WorkerThread(QThread):
             on_release=release_cb,
         )
         self._current_hotkey_vk = new_vk
+        undo_vk = self._settings.get("undo_hotkey_vk", 0x5A)
+        if self._current_undo_vk is not None and self._current_undo_vk != undo_vk:
+            self._hotkey_mgr.unregister(self._current_undo_vk)
+        if undo_vk != new_vk:
+            self._hotkey_mgr.register(
+                undo_vk,
+                self._undo_last,
+                modifiers=MOD_CONTROL | MOD_SHIFT,
+            )
+            self._current_undo_vk = undo_vk
 
     def update_settings(self) -> None:
         self.reconfigure_hotkey()
         self._silence_threshold = self._settings.get("silence_threshold", 0.005)
-        api_key = self._settings.get("api_key", "")
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            api_key = _cs.resolve_profile_key(self._settings.as_dict(), "gemini_live") or self._settings.get(
+                "api_key", ""
+            )
+        except Exception:
+            api_key = self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
             self._processor = TextProcessor(
                 api_key=api_key,
@@ -162,36 +267,45 @@ class WorkerThread(QThread):
         else:
             self._processor = None
 
-        new_model = self._settings.get("model") or MODEL
+        new_profile = self._snapshot_profile()
         new_lang = self._settings.get("language", "auto")
-        if self._client is not None:
-            client_model = getattr(self._client, "_model", "")
-            client_key = getattr(self._client, "_api_key", "")
-            client_lang = getattr(self, "_current_language", "auto")
-            if (
-                client_key != api_key
-                or client_model != new_model
-                or client_lang != new_lang
-            ):
-                if self._loop is not None and self._loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._client.disconnect(), self._loop
-                    )
-                elif self._loop is not None:
+        if self._provider is not None and (
+            self._profile != new_profile or self._current_language != new_lang
+        ):
+            self._profile = new_profile
+            self._current_language = new_lang
+            loop = self._loop
+            if loop is not None:
+                try:
+                    close_coro = self._provider.close()
+                except Exception:
+                    close_coro = None
+                if close_coro is not None:
                     try:
-                        self._loop.run_until_complete(self._client.disconnect())
+                        if loop.is_running():
+                            asyncio.run_coroutine_threadsafe(close_coro, loop)
+                        else:
+                            loop.run_until_complete(close_coro)
                     except Exception:
                         pass
+        else:
+            self._profile = new_profile
+            self._current_language = new_lang
 
     def _start_recording(self) -> None:
         with self._lock:
             if self._recording:
                 return
-            client = self._client
-            if client is None or not client.is_connected:
-                self._signals.error.emit(
-                    "Not connected to Gemini Live yet - wait a moment and press the hotkey again"
-                )
+            provider = self._provider
+            if self._supports_streaming:
+                session_open = bool(provider is not None and getattr(provider, "is_session_open", False))
+                if provider is None or not session_open:
+                    self._signals.error.emit(
+                        "Not connected yet - wait a moment and press the hotkey again"
+                    )
+                    return
+            elif provider is None:
+                self._signals.error.emit("Speech provider is not ready")
                 return
             try:
                 self._recorder.start(
@@ -201,6 +315,7 @@ class WorkerThread(QThread):
             except Exception:
                 self._signals.error.emit("Failed to start microphone")
                 return
+            self._pcm_buffer.clear()
             self._recording = True
         self._signals.recording_started.emit()
 
@@ -211,6 +326,7 @@ class WorkerThread(QThread):
         text = auto_space(self._last_injected, text)
         self._last_injected = text
         if self._injector.inject(text):
+            self._undo_available = True
             self._append_history(raw)
             if self._settings.get("copy_to_clipboard", False):
                 try:
@@ -225,41 +341,251 @@ class WorkerThread(QThread):
             return
         text = auto_space(self._last_injected, text)
         self._last_injected = text
-        self._injector.inject(text)
+        if self._injector.inject(text):
+            self._undo_available = True
 
-    def _load_history(self) -> list[str]:
+    def _undo_last(self, vk_code: int = 0) -> None:
+        if not self._undo_available or not self._last_injected:
+            return
+        try:
+            ok = self._injector.delete_chars(len(self._last_injected))
+        except Exception:
+            ok = False
+        if ok:
+            self._undo_available = False
+            self._last_injected = ""
+
+    def _load_history(self) -> list[dict]:
+        from voice_typing.history import parse_history_list, trim_history
         try:
             if not self._history_path.exists():
                 return []
             loaded = json.loads(self._history_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, list):
-                return []
-            return [str(item) for item in loaded][-MAX_HISTORY:]
+            entries = parse_history_list(loaded)
+            return trim_history(entries)
         except (OSError, ValueError, UnicodeDecodeError):
             return []
 
+    def _history_texts(self) -> list[str]:
+        return [e["text"] for e in self._history]
+
     def _append_history(self, text: str) -> None:
-        if self._history and self._history[-1] == text:
+        from voice_typing.history import trim_history
+        if self._history and self._history[-1]["text"] == text:
             return
-        self._history.append(text)
-        if len(self._history) > MAX_HISTORY:
-            del self._history[:-MAX_HISTORY]
+        from datetime import UTC, datetime
+        self._history.append({
+            "text": text,
+            "pinned": False,
+            "created_at": datetime.now(UTC).isoformat(),
+        })
+        trim_history(self._history)
+        self._save_history()
+
+    def _save_history(self) -> None:
+        # Perf: mkdir once + skip redundant writes via snapshot fingerprint.
+        # Still synchronous (tests + crash safety rely on it); coalescing
+        # for rapid bursts is handled by schedule_history_save().
+        # NOTE: use getattr defaults — some tests build via __new__ w/o __init__.
         try:
-            self._history_path.parent.mkdir(parents=True, exist_ok=True)
-            self._history_path.write_text(
-                json.dumps(self._history, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            payload = json.dumps(self._history, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        last_snapshot = getattr(self, "_last_saved_snapshot", None)
+        dir_ready = getattr(self, "_history_dir_ready", False)
+        if payload == last_snapshot and dir_ready:
+            self._signals.history_changed.emit(self._history_texts())
+            return
+        try:
+            if not dir_ready:
+                self._history_path.parent.mkdir(parents=True, exist_ok=True)
+                self._history_dir_ready = True
+            self._history_path.write_text(payload, encoding="utf-8")
+            self._last_saved_snapshot = payload
         except OSError:
             pass
-        self._signals.history_changed.emit(list(self._history))
+        self._signals.history_changed.emit(self._history_texts())
 
-    def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
+    def schedule_history_save(self) -> None:
+        """Coalesce rapid history writes (e.g. dictation bursts).
+
+        Emits signal now for live UI, flushes JSON to disk after
+        debounce window. Safe to call repeatedly; only one timer runs.
+        """
+        try:
+            self._signals.history_changed.emit(self._history_texts())
+        except Exception:
+            pass
+        try:
+            existing = getattr(self, "_history_timer", None)
+            if existing is not None and existing.is_alive():
+                return
+        except Exception:
+            pass
+        try:
+            debounce = float(getattr(self, "_history_debounce_sec", 0.5))
+            t = threading.Timer(debounce, self._flush_history)
+            t.daemon = True
+            self._history_timer = t
+            t.start()
+        except Exception:
+            self._flush_history()
+
+    def _flush_history(self) -> None:
+        try:
+            self._history_timer = None
+        except Exception:
+            pass
+        self._save_history()
+
+    def flush_history(self) -> None:
+        """Immediate flush (call on exit / mode switch)."""
+        try:
+            timer = getattr(self, "_history_timer", None)
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+                self._history_timer = None
+        finally:
+            self._save_history()
+
+    def clear_history(self, keep_pinned: bool = True) -> None:
+        if keep_pinned:
+            self._history = [e for e in self._history if e.get("pinned")]
+        else:
+            self._history = []
+        self._save_history()
+
+    def _inject_processed(self, future: asyncio.Future[str], raw: str) -> None:
         try:
             text = future.result()
         except Exception:
             text = raw
         self._inject(text)
+
+    def _build_cleanup_provider(self):
+        cfg = self._settings.get("text_cleanup", {})
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return self._injected_cleanup_provider
+        profile = self._profile or self._snapshot_profile()
+        cleanup_id = str(cfg.get("provider_id", "") or "") or profile.provider_id
+        if cleanup_id == "gemini_live":
+            source = profile if profile.provider_id == "gemini_live" else build_profile(self._settings_dict_with_vault(), "gemini_live")
+            if not source.api_key.strip():
+                return None
+            return GeminiCleanupProvider(api_key=source.api_key, model=source.model)
+        other = build_profile(self._settings_dict_with_vault(), cleanup_id)
+        preset = PROVIDER_PRESETS.get(cleanup_id)
+        base_url = other.base_url.strip() or (preset.default_base_url if preset is not None else "")
+        model = other.model.strip() or (preset.default_model if preset is not None else "")
+        if not base_url or not model:
+            return None
+        return OpenAIChatCleanupProvider(
+            base_url=base_url,
+            api_key=other.api_key,
+            model=model,
+            send_bearer_key=other.send_bearer_key,
+            skip_tls_verify=other.skip_tls_verify,
+        )
+
+    def _on_cleanup_done(self, future: asyncio.Future[str], raw: str) -> None:
+        try:
+            cleaned = future.result()
+        except Exception:
+            cleaned = raw
+        cleaned = raw if not isinstance(cleaned, str) or not cleaned.strip() else cleaned.strip()
+        self._inject(cleaned or raw)
+
+    def _inject_with_cleanup_async(self, text: str) -> bool:
+        """Non-blocking cleanup: schedule on loop, inject via callback.
+
+        Returns True if handled (sync direct or scheduled async).
+        Never blocks WorkerThread — next hotkey stays responsive.
+        """
+        provider = self._cleanup_provider
+        loop = self._loop
+        if provider is None or loop is None or not text.strip():
+            self._inject(text)
+            return True
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                provider.cleanup(text, self._settings.get("custom_vocabulary", "")),
+                loop,
+            )
+            future.add_done_callback(lambda f: self._on_cleanup_done(f, text))
+            return True
+        except Exception:
+            self._inject(text)
+            return True
+
+    def _inject_with_cleanup(self, text: str) -> None:
+        provider = self._cleanup_provider
+        loop = self._loop
+        if provider is None or loop is None or not text.strip():
+            self._inject(text)
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                provider.cleanup(text, self._settings.get("custom_vocabulary", "")), loop
+            )
+            cleaned = future.result(timeout=10)
+        except Exception:
+            cleaned = text
+        self._inject(cleaned.strip() or text if isinstance(cleaned, str) else text)
+
+    def _resolve_final_text(self, text: str) -> str | None:
+        if not text.strip():
+            return None
+        now = time.monotonic()
+        if (
+            self._last_injected_raw == text.strip()
+            and now - self._last_inject_time < 0.5
+        ):
+            return None
+        self._last_injected_raw = text.strip()
+        self._last_inject_time = now
+        if self._cleanup_provider is not None:
+            # Perf: never block WorkerThread on network cleanup.
+            # Inject happens via _on_cleanup_done callback.
+            self._inject_with_cleanup_async(text)
+            return None
+        if self._processor is None or self._loop is None:
+            return text
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self._loop:
+            future = asyncio.ensure_future(self._processor.process(text))
+            future.add_done_callback(
+                lambda f: self._inject_processed(f, text)
+            )
+            return None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._processor.process(text), self._loop
+            )
+            future.add_done_callback(lambda f: self._inject_processed(f, text))
+            return None
+        except Exception:
+            return text
+
+    def _deliver_final_text(self, resolved: str) -> None:
+        if self._settings.get("preview_enabled", False):
+            self._signals.preview_requested.emit(resolved)
+            return
+        self._inject(resolved)
+
+    def _emit_final_text(self, text: str) -> None:
+        resolved = self._resolve_final_text(text)
+        if resolved is None:
+            return
+        self._deliver_final_text(resolved)
+
+    def _inject_from_preview(self, final: str) -> None:
+        self._inject(final)
 
     def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:
@@ -271,43 +597,16 @@ class WorkerThread(QThread):
         if not keep_recording:
             self._signals.recording_stopped.emit()
         text = self._buffer.finalize()
-        if not text.strip():
-            return
-        now = time.monotonic()
-        if (
-            self._last_injected_raw == text.strip()
-            and now - self._last_inject_time < 0.5
-        ):
-            return
-        self._last_injected_raw = text.strip()
-        self._last_inject_time = now
-        if self._processor is None or self._loop is None:
-            self._inject(text)
-            return
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is self._loop:
-            future = asyncio.ensure_future(self._processor.process(text))
-            future.add_done_callback(
-                lambda f: self._inject_processed(f, text)
-            )
-        else:
-            future = asyncio.run_coroutine_threadsafe(
-                self._processor.process(text), self._loop
-            )
-            try:
-                text = future.result(timeout=4)
-            except Exception:
-                pass
-            self._inject(text)
+        self._emit_final_text(text)
 
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
         self._signals.partial_received.emit(text)
 
     def _on_final(self, text: str) -> None:
+        if not self._supports_streaming:
+            self._emit_final_text(text)
+            return
         if text:
             self._buffer.add_partial(text)
         self._finalize_and_inject(
@@ -315,6 +614,60 @@ class WorkerThread(QThread):
                 self._settings.get("mode", "push_to_talk") == "push_to_talk"
             )
         )
+
+    def _settings_dict_with_vault(self) -> dict:
+        """Return a copy of settings with live vault keys overlaid.
+
+        Vault values win when the backend is available; otherwise the
+        plaintext JSON values are kept. The manager's stored dict is
+        never mutated and the file is never back-filled with secrets.
+        """
+        data = self._settings.as_dict()
+        try:
+            from voice_typing.config import credential_store as _cs
+        except ImportError:
+            return data
+        try:
+            profiles = data.get("provider_profiles")
+            if isinstance(profiles, dict) and profiles:
+                overlaid: dict = {}
+                for pid, raw in profiles.items():
+                    entry = dict(raw) if isinstance(raw, dict) else {}
+                    if isinstance(pid, str) and pid:
+                        live = _cs.resolve_profile_key(data, pid)
+                        if live:
+                            entry["api_key"] = live
+                    overlaid[pid] = entry
+                data["provider_profiles"] = overlaid
+        except Exception:
+            pass
+        return data
+
+    def _snapshot_profile(self) -> ProviderProfile:
+        return build_profile(self._settings_dict_with_vault())
+
+    def _on_provider_event(self, event: TranscriptEvent) -> None:
+        if event.kind == EventKind.PARTIAL:
+            if not self._supports_streaming:
+                return
+            self._on_partial(event.text)
+        elif event.kind == EventKind.FINAL:
+            self._on_final(event.text or "")
+        elif event.error is not None:
+            self._on_provider_error(event.error)
+        elif event.text:
+            self._signals.status.emit(event.text)
+
+    def _on_provider_error(self, error) -> None:
+        message = redact_text(error.message)[:300] or error.category.value
+        if error.category in (
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.UNSUPPORTED,
+            ErrorCategory.INVALID_CONFIGURATION,
+        ):
+            self._signals.error.emit(message)
+        else:
+            self._signals.status.emit(message)
 
     def _sleep(self, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
@@ -331,12 +684,21 @@ class WorkerThread(QThread):
                 except Exception:
                     pass
                 self._recording = False
+            self._pcm_buffer.clear()
         client = self._client
         if client is not None:
             try:
-                client.abort()
+                abort = getattr(client, "abort", None)
+                if callable(abort):
+                    abort()
             except Exception:
                 pass
+            loop = self._loop
+            if loop is not None and loop.is_running():
+                try:
+                    asyncio.run_coroutine_threadsafe(client.close(), loop)
+                except Exception:
+                    pass
         loop = self._loop
         if loop is not None and loop.is_running():
             try:
@@ -349,18 +711,15 @@ class WorkerThread(QThread):
             pass
 
     def _cleanup(self) -> None:
-        client = self._client
+        provider = self._provider
         loop = self._loop
-        if loop is not None and client is not None and client.is_connected:
+        if provider is not None and loop is not None:
             try:
-                loop.run_until_complete(client.disconnect())
+                loop.run_until_complete(provider.close())
             except Exception:
                 pass
-        elif client is not None:
-            try:
-                client.abort()
-            except Exception:
-                pass
+        self._provider = None
+        self._client = None
         self._hotkey_mgr.stop()
         if loop is not None:
             try:
@@ -370,10 +729,22 @@ class WorkerThread(QThread):
             self._loop = None
 
     def run(self) -> None:
-        api_key = self._settings.get("api_key", "")
-        if not api_key:
-            self._signals.error.emit("No API key configured")
+        self._profile = self._snapshot_profile()
+        try:
+            self._provider = self._provider_factory(self._profile, self._on_provider_event)
+        except ProviderConfigurationError as exc:
+            self._signals.error.emit(exc.message[:300] or "Speech provider is not configured")
             return
+        except Exception as exc:
+            self._signals.error.emit(redact_text(str(exc))[:300] or "Cannot create speech provider")
+            return
+        self._client = self._provider
+        self._supports_streaming = self._provider.capabilities.streaming_stt
+        if self._cleanup_provider is None:
+            try:
+                self._cleanup_provider = self._build_cleanup_provider()
+            except Exception:
+                self._cleanup_provider = None
         self.reconfigure_hotkey()
         self._hotkey_mgr.start()
         self._hotkey_mgr.wait_ready(timeout=2.0)
@@ -384,80 +755,89 @@ class WorkerThread(QThread):
                 + ", ".join(hotkey_name(v) for v in failures)
                 + " failed to register - another app may already be using it"
             )
-        last_error = ""
         try:
-            self._signals.status.emit("Connecting to Gemini Live...")
-            while not self._should_stop:
-                self._client = GeminiLiveClient(
-                    api_key=api_key,
-                    model=self._settings.get("model") or MODEL,
-                )
-                self._current_language = self._settings.get("language", "auto")
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-                try:
-                    self._loop.run_until_complete(
-                        self._client.connect(
-                            language=self._current_language
-                        )
-                    )
-                    break
-                except Exception as exc:
-                    last_error = str(exc)
-                    if self._loop is not None:
-                        self._loop.close()
-                        self._loop = None
-                    self._client = None
-                    if self._should_stop:
-                        return
-                    if self._sleep(3):
-                        return
-            if self._client is None or not self._client.is_connected:
-                self._signals.error.emit(
-                    "Cannot connect to Gemini Live: "
-                    f"{last_error[:300] or 'unknown error'} - check your API key and internet"
-                )
-                return
-            if not self._settings.get("fast_mode", True):
-                self._processor = TextProcessor(
-                    api_key=api_key,
-                    vocabulary=self._settings.get("custom_vocabulary", ""),
-                )
-            while not self._should_stop:
-                loop = self._loop
-                if loop is None:
-                    return
-                try:
-                    loop.run_until_complete(
-                        self._client.receive_transcript(
-                            on_partial=self._on_partial, on_final=self._on_final
-                        )
-                    )
-                except Exception as exc:
-                    last_error = str(exc)
-                    if self._should_stop:
-                        break
-                    self._signals.status.emit("Connection lost - reconnecting...")
-                if self._should_stop:
-                    break
-                if self._client.is_connected:
-                    continue
-                self._stop_recording_on_connection_lost()
-                if loop is not None:
-                    loop.close()
-                    self._loop = None
-                if not self._reconnect():
-                    self._signals.error.emit(
-                        "Connection lost and could not reconnect: "
-                        f"{last_error[:300] or 'unknown error'}"
-                    )
-                    return
+            if self._supports_streaming:
+                self._run_streaming()
+            else:
+                self._run_batch()
         except Exception as exc:
             self._signals.error.emit(
-                f"Speech engine connection lost: {str(exc)[:300]}"
+                f"Speech engine connection lost: {redact_text(str(exc))[:300]}"
             )
         finally:
             self._cleanup()
+
+    def _run_batch(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._signals.status.emit("Ready")
+        self._loop.run_forever()
+
+    def _run_streaming(self) -> None:
+        assert self._provider is not None
+        last_error = ""
+        self._signals.status.emit("Connecting...")
+        while not self._should_stop:
+            self._current_language = self._settings.get("language", "auto")
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            try:
+                self._loop.run_until_complete(
+                    self._provider.start_session(
+                        self._current_language,
+                        self._settings.get("custom_vocabulary", ""),
+                    )
+                )
+                break
+            except ProviderConfigurationError as exc:
+                self._signals.error.emit(exc.message[:300] or "Speech provider is not configured")
+                return
+            except Exception as exc:
+                last_error = redact_text(str(exc))[:300]
+                if self._loop is not None:
+                    self._loop.close()
+                    self._loop = None
+                if self._should_stop:
+                    return
+                if self._sleep(3):
+                    return
+        self._signals.status.emit("Ready")
+        if not self._settings.get("fast_mode", True):
+            try:
+                from voice_typing.config import credential_store as _cs
+
+                _vault_key = _cs.resolve_profile_key(self._settings.as_dict(), "gemini_live")
+            except Exception:
+                _vault_key = ""
+            self._processor = TextProcessor(
+                api_key=_vault_key or self._settings.get("api_key", ""),
+                vocabulary=self._settings.get("custom_vocabulary", ""),
+            )
+        while not self._should_stop:
+            loop = self._loop
+            if loop is None:
+                return
+            try:
+                loop.run_until_complete(self._provider.pump())
+            except Exception as exc:
+                last_error = redact_text(str(exc))[:300]
+                if self._should_stop:
+                    break
+                self._signals.status.emit("Connection lost - reconnecting...")
+            if self._should_stop:
+                break
+            if getattr(self._provider, "is_session_open", True):
+                continue
+            self._stop_recording_on_connection_lost()
+            if loop is not None:
+                loop.close()
+                self._loop = None
+            if not self._reconnect():
+                self._signals.error.emit(
+                    "Connection lost and could not reconnect: "
+                    f"{last_error[:300] or 'unknown error'}"
+                )
+                return
 
     def _stop_recording_on_connection_lost(self) -> None:
         stopped = False
@@ -469,41 +849,40 @@ class WorkerThread(QThread):
         if stopped:
             self._signals.recording_stopped.emit()
             text = self._buffer.finalize()
-            if text.strip():
-                self._inject(text)
+            self._emit_final_text(text)
 
     def _reconnect(self) -> bool:
-        api_key = self._settings.get("api_key", "")
         delays = (2, 4, 8)
-        last_error = ""
         for attempt, delay in enumerate(delays, start=1):
             if self._should_stop:
                 return False
             if self._sleep(delay):
                 return False
+            if self._profile is None:
+                return False
             loop = None
             try:
-                client = GeminiLiveClient(
-                    api_key=api_key,
-                    model=self._settings.get("model") or MODEL,
-                )
+                provider = self._provider_factory(self._profile, self._on_provider_event)
                 self._current_language = self._settings.get("language", "auto")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(
-                    client.connect(language=self._current_language)
+                    provider.start_session(
+                        self._current_language,
+                        self._settings.get("custom_vocabulary", ""),
+                    )
                 )
-            except Exception as exc:
-                last_error = str(exc)
+            except Exception:
                 if loop is not None:
                     loop.close()
                 self._signals.status.emit(
                     f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
                 )
                 continue
-            self._client = client
+            self._provider = provider
+            self._client = provider
             self._loop = loop
-            self._signals.status.emit("Reconnected to Gemini Live")
+            self._signals.status.emit("Ready")
             return True
         return False
 
@@ -536,13 +915,13 @@ class VoiceTypeApp:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("voicetype.app.1.0")
         except Exception:
             pass
-        self._qapp = QApplication.instance() or QApplication(sys.argv)
+        self._qapp: QApplication = QApplication.instance() or QApplication(sys.argv)
         self._qapp.setQuitOnLastWindowClosed(False)
         try:
             icon_file = get_asset_path("icon.ico")
             if not icon_file.exists():
                 icon_file = get_asset_path("icon.png")
-            if icon_file.exists() and hasattr(self._qapp, "setWindowIcon"):
+            if icon_file.exists():
                 self._qapp.setWindowIcon(QIcon(str(icon_file)))
         except Exception:
             pass
@@ -575,6 +954,8 @@ class VoiceTypeApp:
         self._tray.signals.clear_history.connect(self._on_clear_history)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._tray.signals.re_inject.connect(self._on_re_inject)
+        self._tray.signals.open_history.connect(self._open_history)
+        self._tray.signals.check_update.connect(self._check_for_update)
         self._tray.signals.show_status_bar.connect(self._status_bar.show)
         self._status_bar.signals.start_recording.connect(self._start_recording)
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
@@ -625,6 +1006,7 @@ class VoiceTypeApp:
         self._worker._signals.status.connect(self._on_status)
         self._worker._signals.audio_level.connect(self._status_bar.set_level)
         self._worker._signals.history_changed.connect(self._tray.set_history)
+        self._worker._signals.preview_requested.connect(self._on_preview_requested)
         self._worker.start()
 
     def _on_re_inject(self, text: str) -> None:
@@ -634,7 +1016,10 @@ class VoiceTypeApp:
 
     def _stop_recording(self) -> None:
         if self._worker is not None:
-            self._worker._finalize_and_inject()
+            if getattr(self._worker, "_supports_streaming", True):
+                self._worker._finalize_and_inject()
+            else:
+                self._worker._finish_batch_turn()
 
     def _on_recording_started(self) -> None:
         self._tray.update_recording_state(True)
@@ -705,9 +1090,54 @@ class VoiceTypeApp:
 
     def _on_clear_history(self) -> None:
         if self._worker is not None:
-            self._worker._history.clear()
+            self._worker.clear_history(keep_pinned=True)
+            self._tray.set_history(self._worker._history_texts())
+        else:
+            self._tray.set_history([])
+
+    def _on_preview_requested(self, text: str) -> None:
+        from voice_typing.ui.preview_dialog import PreviewDialog
+
+        dlg = PreviewDialog()
+        dlg.set_text(text)
+        dlg.exec()
+        verdict = dlg.take_verdict()
+        if verdict == "insert":
+            worker = self._worker
+            if worker is not None:
+                worker._inject_from_preview(dlg.current_text())
+        # discard: do nothing
+
+    def _open_history(self) -> None:
+        from voice_typing.ui.history_dialog import HistoryDialog
+
+        history = self._worker._history if self._worker is not None else []
+        dlg = HistoryDialog(history)
+        dlg.exec()
+        if self._worker is not None:
+            self._worker._history = dlg.history
             self._worker._save_history()
-        self._tray.set_history([])
+            self._tray.set_history(self._worker._history_texts())
+
+    def _check_for_update(self) -> None:
+        import asyncio
+
+        from voice_typing.update.checker import check_for_updates
+        from voice_typing.version import __version__
+
+        def _do_check() -> None:
+            try:
+                result = asyncio.run(check_for_updates(__version__))
+            except Exception:
+                return
+            if result.available:
+                QMessageBox.information(
+                    None,
+                    "Update Available",
+                    f"A newer version is available: {result.latest_tag}\n\n{result.url}",
+                )
+
+        threading.Thread(target=_do_check, daemon=True).start()
 
     def _open_settings(self) -> None:
         if self._settings_win is None:
@@ -740,20 +1170,113 @@ class VoiceTypeApp:
 
 
     def _run_setup_wizard(self) -> None:
-        if self._settings.get("api_key"):
+        from voice_typing.providers.contracts import build_profile as _build_profile
+        from voice_typing.providers.presets import PROVIDER_ORDER as _ORDER
+        from voice_typing.providers.presets import PROVIDER_PRESETS as _PRESETS
+        from voice_typing.providers.registry import build_default_registry as _registry
+        from voice_typing.providers.registry import supports_dictation as _supports
+
+        settings_data = self._settings.as_dict()
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _wiz_profiles = settings_data.get("provider_profiles")
+            if isinstance(_wiz_profiles, dict) and _wiz_profiles:
+                _wiz_overlaid: dict = {}
+                for _pid, _raw in _wiz_profiles.items():
+                    _entry = dict(_raw) if isinstance(_raw, dict) else {}
+                    if isinstance(_pid, str) and _pid:
+                        _live = _cs.resolve_profile_key(settings_data, _pid)
+                        if _live:
+                            _entry["api_key"] = _live
+                    _wiz_overlaid[_pid] = _entry
+                settings_data["provider_profiles"] = _wiz_overlaid
+        except Exception:
+            pass
+        current_id = str(settings_data.get("provider_id", "gemini_live") or "gemini_live")
+        current_preset = _PRESETS.get(current_id)
+        if current_preset is not None:
+            try:
+                current_profile = _build_profile(settings_data, current_id)
+            except Exception:
+                current_profile = None
+            if current_profile is not None:
+                if current_preset.needs_api_key:
+                    if str(getattr(current_profile, "api_key", "") or "").strip():
+                        return
+                else:
+                    _base = str(getattr(current_profile, "base_url", "") or "").strip()
+                    _def_base = str(getattr(current_preset, "default_base_url", "") or "").strip()
+                    if _base or _def_base:
+                        return
+        snapshot = _build_profile(self._settings.as_dict())
+        if _supports(snapshot, _registry()) is None:
             return
-        api_key, ok = QInputDialog.getText(
-            None, "VoiceType Setup", "Enter your Gemini API Key:"
+        labels = [_PRESETS[pid].label for pid in _ORDER]
+        label, ok = QInputDialog.getItem(
+            None, "VoiceType Setup", "Choose speech provider:", labels, 0, False
         )
-        if ok and api_key.strip():
-            self._settings.set("api_key", api_key.strip())
-            self._settings.save()
-        else:
+        if not ok:
             QMessageBox.warning(
                 None,
                 "VoiceType Setup",
-                "No API key entered. You can configure it later in Settings.",
+                "No provider selected. You can configure it later in Settings.",
             )
+            return
+        try:
+            provider_id = _ORDER[labels.index(label)]
+        except ValueError:
+            QMessageBox.warning(
+                None,
+                "VoiceType Setup",
+                "Unknown provider selected. You can configure it later in Settings.",
+            )
+            return
+        preset = _PRESETS[provider_id]
+        profiles = self._settings.get("provider_profiles", {})
+        profiles = dict(profiles) if isinstance(profiles, dict) else {}
+        _raw_profile = profiles.get(provider_id, {})
+        profile = dict(_raw_profile) if isinstance(_raw_profile, dict) else {}
+        if preset.needs_api_key:
+            api_key, ok = QInputDialog.getText(
+                None,
+                "VoiceType Setup",
+                f"Enter API key for {preset.label}:",
+                echo=QLineEdit.EchoMode.Password,
+            )
+            if not ok or not api_key.strip():
+                QMessageBox.warning(
+                    None,
+                    "VoiceType Setup",
+                    "No API key entered. You can configure it later in Settings.",
+                )
+                return
+            profile["api_key"] = api_key.strip()
+        if provider_id in ("openai_compatible", "freellm"):
+            base_url, ok = QInputDialog.getText(
+                None, "VoiceType Setup", "Enter base URL (for example http://localhost:1234/v1):"
+            )
+            if ok and str(base_url or "").strip():
+                profile["base_url"] = str(base_url).strip()
+            else:
+                _existing_base = str(profile.get("base_url", "") or "").strip()
+                _default_base = str(preset.default_base_url or "").strip()
+                if not _existing_base and not _default_base:
+                    QMessageBox.warning(
+                        None,
+                        "VoiceType Setup",
+                        "No endpoint entered. You can configure it later in Settings.",
+                    )
+                    return
+        if preset.default_model and not str(profile.get("model", "") or "").strip():
+            profile["model"] = preset.default_model
+        profiles[provider_id] = profile
+        self._settings.set("provider_profiles", profiles)
+        self._settings.set("provider_id", provider_id)
+        if provider_id == "gemini_live":
+            self._settings.set("api_key", profile.get("api_key", ""))
+            self._settings.set("model", profile.get("model", ""))
+        self._settings.save()
 
     def _exit(self, force_exit: bool = True) -> None:
         try:
@@ -777,7 +1300,7 @@ class VoiceTypeApp:
                 os._exit(0)
 
 
-def main() -> int:
+def main() -> int:  # noqa: RET503 — os._exit() never returns; no fall-through path exists
     if not _acquire_single_instance():
         app = QApplication(sys.argv)
         QMessageBox.warning(
