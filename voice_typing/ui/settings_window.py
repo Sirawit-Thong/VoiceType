@@ -36,6 +36,7 @@ from voice_typing.providers.presets import (
 from voice_typing.providers.redaction import redact_text
 from voice_typing.providers.registry import build_default_registry
 from voice_typing.speech.gemini_live import MODEL
+from voice_typing.version import __version__
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
@@ -285,6 +286,12 @@ class SettingsWindow(QDialog):
         self._copy_to_clipboard = QCheckBox("Also copy recognized text to clipboard")
         layout.addRow("Clipboard:", self._copy_to_clipboard)
 
+        self._preview_checkbox = QCheckBox("Show preview before injecting text")
+        layout.addRow("Preview:", self._preview_checkbox)
+
+        self._update_check = QCheckBox("Check for updates weekly")
+        layout.addRow("Updates:", self._update_check)
+
         return w
 
     def _hotkey_tab(self) -> QWidget:
@@ -308,6 +315,14 @@ class SettingsWindow(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
         layout.addRow("", hint)
+
+        self._undo_hotkey_combo = QComboBox()
+        layout.addRow("Undo Last (hold Ctrl+Shift+):", self._undo_hotkey_combo)
+
+        undo_hint = QLabel("Hold Ctrl+Shift with the key below to undo the last injection.")
+        undo_hint.setWordWrap(True)
+        undo_hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        layout.addRow("", undo_hint)
 
         return w
 
@@ -508,7 +523,7 @@ class SettingsWindow(QDialog):
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff; margin-top: 8px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
 
-        version = QLabel("v1.0.0")
+        version = QLabel(f"v{__version__}")
         version.setStyleSheet("color: #a8c7fa; font-size: 13px;")
         layout.addWidget(version, 0, Qt.AlignmentFlag.AlignCenter)
 
@@ -609,6 +624,8 @@ class SettingsWindow(QDialog):
         self._show_status.setChecked(self._settings.get("show_status_bar", True))
         self._sound_feedback.setChecked(self._settings.get("sound_feedback", True))
         self._copy_to_clipboard.setChecked(self._settings.get("copy_to_clipboard", False))
+        self._preview_checkbox.setChecked(self._settings.get("preview_enabled", False))
+        self._update_check.setChecked(self._settings.get("update_check_enabled", False))
 
         # Hotkey
         current_hotkey = self._settings.get("hotkey", 0x78)
@@ -622,6 +639,19 @@ class SettingsWindow(QDialog):
             self._hotkey_combo.addItem(hotkey_name(current_hotkey), current_hotkey)
             selected = self._hotkey_combo.count() - 1
         self._hotkey_combo.setCurrentIndex(selected)
+
+        # Undo hotkey
+        current_undo = self._settings.get("undo_hotkey_vk", 0x5A)
+        self._undo_hotkey_combo.clear()
+        undo_selected = 0
+        for i, (name, code) in enumerate(HOTKEY_OPTIONS):
+            self._undo_hotkey_combo.addItem(name, code)
+            if code == current_undo:
+                undo_selected = i
+        if self._undo_hotkey_combo.itemData(undo_selected) != current_undo:
+            self._undo_hotkey_combo.addItem(hotkey_name(current_undo), current_undo)
+            undo_selected = self._undo_hotkey_combo.count() - 1
+        self._undo_hotkey_combo.setCurrentIndex(undo_selected)
 
         # Speech
         current_lang = self._settings.get("language", "auto")
@@ -1058,6 +1088,8 @@ class SettingsWindow(QDialog):
         self._settings.set("show_status_bar", self._show_status.isChecked())
         self._settings.set("sound_feedback", self._sound_feedback.isChecked())
         self._settings.set("copy_to_clipboard", self._copy_to_clipboard.isChecked())
+        self._settings.set("preview_enabled", self._preview_checkbox.isChecked())
+        self._settings.set("update_check_enabled", self._update_check.isChecked())
         lang_map = {0: "auto", 1: "thai", 2: "english"}
         self._settings.set("language", lang_map.get(self._lang_combo.currentIndex(), "auto"))
         self._settings.set("microphone_device_id", self._mic_combo.currentData())
@@ -1103,6 +1135,8 @@ class SettingsWindow(QDialog):
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
+        undo_hotkey_val = self._undo_hotkey_combo.currentData()
+        self._settings.set("undo_hotkey_vk", int(undo_hotkey_val) if undo_hotkey_val is not None else 0x5A)
 
         self._settings.save()
         self.saved.emit()
