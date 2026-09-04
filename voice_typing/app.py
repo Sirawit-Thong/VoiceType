@@ -32,6 +32,8 @@ from voice_typing.providers.contracts import (
     build_profile,
 )
 from voice_typing.providers.redaction import redact_text
+from voice_typing.providers.cleanup import GeminiCleanupProvider, OpenAIChatCleanupProvider
+from voice_typing.providers.presets import PROVIDER_PRESETS
 from voice_typing.providers.registry import Factory, default_factory
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
@@ -75,10 +77,16 @@ class WorkerSignals(QObject):
 
 
 class WorkerThread(QThread):
-    def __init__(self, settings: SettingsManager, provider_factory: Factory | None = None) -> None:
+    def __init__(
+        self,
+        settings: SettingsManager,
+        provider_factory: Factory | None = None,
+        cleanup_provider=None,
+    ) -> None:
         super().__init__()
         self._settings = settings
         self._provider_factory: Factory = provider_factory or default_factory
+        self._injected_cleanup_provider = cleanup_provider
         self._signals = WorkerSignals()
         self._recorder = AudioRecorder()
         self._buffer = TranscriptBuffer()
@@ -91,7 +99,7 @@ class WorkerThread(QThread):
         self._profile: ProviderProfile | None = None
         self._supports_streaming = True
         self._pcm_buffer = bytearray()
-        self._cleanup_provider = None
+        self._cleanup_provider = self._injected_cleanup_provider
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
@@ -341,6 +349,46 @@ class WorkerThread(QThread):
             text = raw
         self._inject(text)
 
+    def _build_cleanup_provider(self):
+        cfg = self._settings.get("text_cleanup", {})
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return self._injected_cleanup_provider
+        profile = self._profile or self._snapshot_profile()
+        cleanup_id = str(cfg.get("provider_id", "") or "") or profile.provider_id
+        if cleanup_id == "gemini_live":
+            source = profile if profile.provider_id == "gemini_live" else build_profile(self._settings.as_dict(), "gemini_live")
+            if not source.api_key.strip():
+                return None
+            return GeminiCleanupProvider(api_key=source.api_key, model=source.model)
+        other = build_profile(self._settings.as_dict(), cleanup_id)
+        preset = PROVIDER_PRESETS.get(cleanup_id)
+        base_url = other.base_url.strip() or (preset.default_base_url if preset is not None else "")
+        model = other.model.strip() or (preset.default_model if preset is not None else "")
+        if not base_url or not model:
+            return None
+        return OpenAIChatCleanupProvider(
+            base_url=base_url,
+            api_key=other.api_key,
+            model=model,
+            send_bearer_key=other.send_bearer_key,
+            skip_tls_verify=other.skip_tls_verify,
+        )
+
+    def _inject_with_cleanup(self, text: str) -> None:
+        provider = self._cleanup_provider
+        loop = self._loop
+        if provider is None or loop is None or not text.strip():
+            self._inject(text)
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                provider.cleanup(text, self._settings.get("custom_vocabulary", "")), loop
+            )
+            cleaned = future.result(timeout=10)
+        except Exception:
+            cleaned = text
+        self._inject(cleaned.strip() or text if isinstance(cleaned, str) else text)
+
     def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:
             if not self._recording:
@@ -361,6 +409,9 @@ class WorkerThread(QThread):
             return
         self._last_injected_raw = text.strip()
         self._last_inject_time = now
+        if self._cleanup_provider is not None:
+            self._inject_with_cleanup(text)
+            return
         if self._processor is None or self._loop is None:
             self._inject(text)
             return
@@ -390,7 +441,7 @@ class WorkerThread(QThread):
     def _on_final(self, text: str) -> None:
         if not self._supports_streaming:
             if text and text.strip():
-                self._inject(text)
+                self._inject_with_cleanup(text)
             return
         if text:
             self._buffer.add_partial(text)
@@ -497,6 +548,11 @@ class WorkerThread(QThread):
             return
         self._client = self._provider
         self._supports_streaming = self._provider.capabilities.streaming_stt
+        if self._cleanup_provider is None:
+            try:
+                self._cleanup_provider = self._build_cleanup_provider()
+            except Exception:
+                self._cleanup_provider = None
         self.reconfigure_hotkey()
         self._hotkey_mgr.start()
         self._hotkey_mgr.wait_ready(timeout=2.0)
