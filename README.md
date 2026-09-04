@@ -88,6 +88,10 @@ python -m voice_typing.app
 
 On first launch, enter your **Gemini API Key** in the Setup Wizard or Settings window.
 
+### 🔐 API Key Storage (Windows Credential Manager)
+
+Per-provider API keys are stored in **Windows Credential Manager** (DPAPI-backed) under service `VoiceType` with one account per provider (`voicetype/{provider_id}/api_key`, e.g. `voicetype/groq/api_key`). Existing plaintext keys in `%APPDATA%/VoiceType/settings.json` migrate into the vault once and the file copies are blanked; non-secret settings stay in the file as before. If no usable credential backend is found, the app keeps working with plaintext `settings.json` and Settings shows a persistent warning with **Retry** and **Learn more** actions. Resetting settings to defaults also deletes the matching vault entries; deleting `settings.json` alone does not — remove leftovers under Control Panel > Credential Manager > Windows Credentials > VoiceType.
+
 ---
 
 ## 📦 Build Standalone Executable (.exe)
@@ -124,7 +128,8 @@ VoiceType/
 │   ├── audio/              # Microphone capture & device enumeration
 │   │   └── recorder.py
 │   ├── config/             # Configuration management & asset resolver
-│   │   └── settings.py
+│   │   ├── settings.py
+│   │   └── credential_store.py  # Windows Credential Manager vault boundary (API keys)
 │   ├── speech/             # Gemini Live WebSocket client & audio streaming
 │   │   ├── engine.py
 │   │   └── gemini_live.py
