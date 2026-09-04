@@ -39,6 +39,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "opacity": 0.94,
     "silence_threshold": 0.005,
     "custom_vocabulary": "",
+    "preview_enabled": False,
+    "undo_hotkey_vk": 0x5A,
+    "update_check_enabled": False,
+    "update_last_check": "",
 }
 
 
@@ -61,6 +65,7 @@ class SettingsManager:
             return
         self.migrate_provider_profiles()
         self.migrate_keys_to_vault()
+        self._clamp_undo_hotkey_vk()
 
     def migrate_provider_profiles(self) -> bool:
         """Migrate legacy top-level api_key/model into the Gemini profile.
@@ -147,6 +152,16 @@ class SettingsManager:
             except Exception:
                 pass
         return migrated
+
+    def _clamp_undo_hotkey_vk(self) -> None:
+        vk = self._data.get("undo_hotkey_vk", 0x5A)
+        valid = (
+            isinstance(vk, int)
+            and not isinstance(vk, bool)
+            and ((0x41 <= vk <= 0x5A) or (0x30 <= vk <= 0x39))
+        )
+        if not valid:
+            self._data["undo_hotkey_vk"] = 0x5A
 
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

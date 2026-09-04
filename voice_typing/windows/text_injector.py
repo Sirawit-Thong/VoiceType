@@ -72,6 +72,46 @@ def auto_space(previous: str, current: str) -> str:
     return " " + current
 
 
+def text_to_utf16_units(text: str) -> list[int]:
+    """Pure: flatten text to UTF-16LE code units for SendInput batch.
+
+    Same encoding as _send_unicode_char but without syscalls,
+    so it is unit-testable on any OS.
+    """
+    if not text:
+        return []
+    raw = text.encode("utf-16le")
+    return [
+        int.from_bytes(raw[i : i + 2], "little") for i in range(0, len(raw), 2)
+    ]
+
+
+def _build_input_array(units: list[int]):
+    """Build (INPUT * N) array with down+up per UTF-16 unit."""
+    total = len(units) * 2
+    arr = (INPUT * total)()
+    idx = 0
+    for unit in units:
+        for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+            arr[idx] = INPUT(
+                INPUT_KEYBOARD, _INPUTUNION(ki=KEYBDINPUT(0, unit, flags, 0, None))
+            )
+            idx += 1
+    return arr
+
+
+def send_units_batch(units: list[int]) -> bool:
+    """Single SendInput syscall for all units. Returns True iff all sent."""
+    if not units:
+        return True
+    try:
+        arr = _build_input_array(units)
+        sent = user32.SendInput(len(arr), arr, ctypes.sizeof(INPUT))
+        return sent == len(arr)
+    except Exception:
+        return False
+
+
 def _send_unicode_char(char: str) -> bool:
     utf16_bytes = char.encode("utf-16le")
     utf16_units = [
@@ -107,7 +147,11 @@ class TextInjector:
         self.typing_speed = typing_speed
 
     def inject(self, text: str, typing_speed: float | None = None) -> bool:
-        return self._clipboard_inject(text) or self._sendinput_inject(text, typing_speed=typing_speed)
+        return (
+            self._clipboard_inject(text)
+            or self._sendinput_batch(text, typing_speed=typing_speed)
+            or self._sendinput_inject(text, typing_speed=typing_speed)
+        )
 
     def delete_chars(self, n: int) -> bool:
         """Synthesize n Backspace presses. No-op (True) for n <= 0. True only if all sent."""
@@ -157,6 +201,18 @@ class TextInjector:
             if original:
                 self._restore_clipboard_async(original, delay=0.0)
             return False
+
+    def _sendinput_batch(
+        self, text: str, typing_speed: float | None = None
+    ) -> bool:
+        """Fast path: one SendInput syscall. Skipped when typing effect wanted."""
+        speed = self.typing_speed if typing_speed is None else typing_speed
+        if speed and speed > 0:
+            return False  # let per-char loop handle typing effect
+        if not text:
+            return True
+        units = text_to_utf16_units(text)
+        return send_units_batch(units)
 
     def _sendinput_inject(
         self, text: str, typing_speed: float | None = None

@@ -4,12 +4,10 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
-import math
 import sys
 import threading
 import time
 import winsound
-from array import array
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -108,6 +106,10 @@ class WorkerThread(QThread):
         self._lock = threading.Lock()
         self._recording = False
         self._should_stop = False
+        self._history_dir_ready = False
+        self._last_saved_snapshot: str | None = None
+        self._history_timer: threading.Timer | None = None
+        self._history_debounce_sec = 0.5
         self._last_injected = ""
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
@@ -131,6 +133,16 @@ class WorkerThread(QThread):
             and loop is not None
             and getattr(provider, "is_session_open", True)
         ):
+            # Perf: skip silent chunks on the network path only.
+            # Local pcm_buffer + level meter above still run so batch
+            # turns and UI stay correct; we just save bandwidth/cost.
+            try:
+                from voice_typing.audio.levels import is_silence
+
+                if is_silence(audio_bytes, self._silence_threshold) is True:
+                    return
+            except Exception:
+                pass
             future = asyncio.run_coroutine_threadsafe(
                 provider.send_audio(audio_bytes), loop
             )
@@ -138,24 +150,16 @@ class WorkerThread(QThread):
 
     def _update_audio_level(self, audio_bytes: bytes) -> None:
         # Keep this fast: it runs on the audio callback thread for every chunk.
-        if len(audio_bytes) < 2 or len(audio_bytes) % 2 != 0:
+        # Delegates to pure vectorized helpers in audio/levels.py (numpy).
+        from voice_typing.audio.levels import calculate_audio_level
+
+        emit, new_last = calculate_audio_level(
+            audio_bytes, self._last_level, self._silence_threshold
+        )
+        if emit is None:
             return
-        samples = array("h")
-        samples.frombytes(audio_bytes)
-        if not samples:
-            return
-        sum_sq = 0
-        for sample in samples:
-            sum_sq += sample * sample
-        normalized = math.sqrt(sum_sq / len(samples)) / 32768.0
-        if normalized < self._silence_threshold:
-            self._last_level *= 0.9
-            self._signals.audio_level.emit(0.0)
-            return
-        # Gentle curve plus attack/release smoothing so the meter feels lively.
-        level = max(normalized ** 0.5, self._last_level * 0.75)
-        self._last_level = level
-        self._signals.audio_level.emit(max(0.0, min(1.0, level)))
+        self._last_level = new_last
+        self._signals.audio_level.emit(emit)
 
     def _on_audio_sent(self, future) -> None:
         try:
@@ -379,15 +383,73 @@ class WorkerThread(QThread):
         self._save_history()
 
     def _save_history(self) -> None:
+        # Perf: mkdir once + skip redundant writes via snapshot fingerprint.
+        # Still synchronous (tests + crash safety rely on it); coalescing
+        # for rapid bursts is handled by schedule_history_save().
+        # NOTE: use getattr defaults — some tests build via __new__ w/o __init__.
         try:
-            self._history_path.parent.mkdir(parents=True, exist_ok=True)
-            self._history_path.write_text(
-                json.dumps(self._history, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            payload = json.dumps(self._history, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return
+        last_snapshot = getattr(self, "_last_saved_snapshot", None)
+        dir_ready = getattr(self, "_history_dir_ready", False)
+        if payload == last_snapshot and dir_ready:
+            self._signals.history_changed.emit(self._history_texts())
+            return
+        try:
+            if not dir_ready:
+                self._history_path.parent.mkdir(parents=True, exist_ok=True)
+                self._history_dir_ready = True
+            self._history_path.write_text(payload, encoding="utf-8")
+            self._last_saved_snapshot = payload
         except OSError:
             pass
         self._signals.history_changed.emit(self._history_texts())
+
+    def schedule_history_save(self) -> None:
+        """Coalesce rapid history writes (e.g. dictation bursts).
+
+        Emits signal now for live UI, flushes JSON to disk after
+        debounce window. Safe to call repeatedly; only one timer runs.
+        """
+        try:
+            self._signals.history_changed.emit(self._history_texts())
+        except Exception:
+            pass
+        try:
+            existing = getattr(self, "_history_timer", None)
+            if existing is not None and existing.is_alive():
+                return
+        except Exception:
+            pass
+        try:
+            debounce = float(getattr(self, "_history_debounce_sec", 0.5))
+            t = threading.Timer(debounce, self._flush_history)
+            t.daemon = True
+            self._history_timer = t
+            t.start()
+        except Exception:
+            self._flush_history()
+
+    def _flush_history(self) -> None:
+        try:
+            self._history_timer = None
+        except Exception:
+            pass
+        self._save_history()
+
+    def flush_history(self) -> None:
+        """Immediate flush (call on exit / mode switch)."""
+        try:
+            timer = getattr(self, "_history_timer", None)
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+                self._history_timer = None
+        finally:
+            self._save_history()
 
     def clear_history(self, keep_pinned: bool = True) -> None:
         if keep_pinned:
@@ -428,6 +490,39 @@ class WorkerThread(QThread):
             skip_tls_verify=other.skip_tls_verify,
         )
 
+    def _on_cleanup_done(self, future: asyncio.Future, raw: str) -> None:
+        try:
+            cleaned = future.result()
+        except Exception:
+            cleaned = raw
+        if not isinstance(cleaned, str) or not cleaned.strip():
+            cleaned = raw
+        else:
+            cleaned = cleaned.strip()
+        self._inject(cleaned or raw)
+
+    def _inject_with_cleanup_async(self, text: str) -> bool:
+        """Non-blocking cleanup: schedule on loop, inject via callback.
+
+        Returns True if handled (sync direct or scheduled async).
+        Never blocks WorkerThread — next hotkey stays responsive.
+        """
+        provider = self._cleanup_provider
+        loop = self._loop
+        if provider is None or loop is None or not text.strip():
+            self._inject(text)
+            return True
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                provider.cleanup(text, self._settings.get("custom_vocabulary", "")),
+                loop,
+            )
+            future.add_done_callback(lambda f: self._on_cleanup_done(f, text))
+            return True
+        except Exception:
+            self._inject(text)
+            return True
+
     def _inject_with_cleanup(self, text: str) -> None:
         provider = self._cleanup_provider
         loop = self._loop
@@ -455,7 +550,9 @@ class WorkerThread(QThread):
         self._last_injected_raw = text.strip()
         self._last_inject_time = now
         if self._cleanup_provider is not None:
-            self._inject_with_cleanup(text)
+            # Perf: never block WorkerThread on network cleanup.
+            # Inject happens via _on_cleanup_done callback.
+            self._inject_with_cleanup_async(text)
             return None
         if self._processor is None or self._loop is None:
             return text
@@ -469,14 +566,14 @@ class WorkerThread(QThread):
                 lambda f: self._inject_processed(f, text)
             )
             return None
-        future = asyncio.run_coroutine_threadsafe(
-            self._processor.process(text), self._loop
-        )
         try:
-            text = future.result(timeout=4)
+            future = asyncio.run_coroutine_threadsafe(
+                self._processor.process(text), self._loop
+            )
+            future.add_done_callback(lambda f: self._inject_processed(f, text))
+            return None
         except Exception:
-            pass
-        return text
+            return text
 
     def _deliver_final_text(self, resolved: str) -> None:
         if self._settings.get("preview_enabled", False):

@@ -144,9 +144,21 @@ def test_batch_final_with_cleanup_injects_cleaned_once(tmp_path):
     cleanup = _FakeCleanupForBatch("Hello, batch.")
     worker = _batch_worker_with_cleanup(tmp_path, cleanup)
     worker._on_final("hello batch")
+    assert _wait_for_batch_inject(worker._injector.inject, 1)
     worker._injector.inject.assert_called_once_with("Hello, batch.")
     assert cleanup.calls == [("hello batch", "")]
     worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def _wait_for_batch_inject(mock_inject, count=1, timeout=2.0):
+    import time as _t
+
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if mock_inject.call_count >= count:
+            return True
+        _t.sleep(0.02)
+    return mock_inject.call_count >= count
 
 
 def test_batch_duplicate_within_half_second_injects_once(tmp_path):
@@ -154,6 +166,7 @@ def test_batch_duplicate_within_half_second_injects_once(tmp_path):
     worker = _batch_worker_with_cleanup(tmp_path, cleanup)
     worker._on_final("hello batch")
     worker._on_final("hello batch")
+    assert _wait_for_batch_inject(worker._injector.inject, 1)
     worker._injector.inject.assert_called_once_with("Hello, batch.")
     worker._loop.call_soon_threadsafe(worker._loop.stop)
 
@@ -164,6 +177,8 @@ def test_batch_final_without_cleanup_routes_through_processor(tmp_path):
     fake_processor = MagicMock()
     fake_future = MagicMock()
     fake_future.result.return_value = "PROCESSED batch"
+    # Non-blocking path uses add_done_callback — invoke immediately.
+    fake_future.add_done_callback.side_effect = lambda cb: cb(fake_future)
     with patch("asyncio.run_coroutine_threadsafe", return_value=fake_future):
         worker._processor = fake_processor
         worker._on_final("hello batch")

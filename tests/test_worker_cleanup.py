@@ -43,6 +43,17 @@ def _running_loop():
     return loop
 
 
+def _wait_for_inject(mock_inject, count=1, timeout=2.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if mock_inject.call_count >= count:
+            return True
+        time.sleep(0.02)
+    return mock_inject.call_count >= count
+
+
 def _worker(tmp_path, cleanup):
     mgr = SettingsManager(Path(tmp_path) / "s.json")
     mgr.load()
@@ -98,6 +109,7 @@ def test_finalize_uses_cleanup_when_enabled(tmp_path):
     worker._recording = True
     worker._buffer.add_partial("raw")
     worker._finalize_and_inject()
+    assert _wait_for_inject(worker._injector.inject, 1)
     worker._injector.inject.assert_called_once_with("Cleaned.")
     worker._loop.call_soon_threadsafe(worker._loop.stop)
 
@@ -108,6 +120,7 @@ def test_connection_loss_flush_routes_through_cleanup(tmp_path):
     worker._recording = True
     worker._buffer.add_partial("raw after drop")
     worker._stop_recording_on_connection_lost()
+    assert _wait_for_inject(worker._injector.inject, 1)
     worker._injector.inject.assert_called_once_with("Cleaned after drop.")
     assert worker._recording is False
     worker._loop.call_soon_threadsafe(worker._loop.stop)
@@ -119,10 +132,15 @@ def test_connection_loss_duplicate_of_just_injected_final_is_suppressed(tmp_path
     worker._recording = True
     worker._buffer.add_partial("same")
     worker._finalize_and_inject()
+    assert _wait_for_inject(worker._injector.inject, 1)
     assert worker._injector.inject.call_count == 1
     worker._recording = True
     worker._buffer.add_partial("same")
     worker._stop_recording_on_connection_lost()
+    # give async a chance to (incorrectly) inject again, then verify still 1
+    import time as _t
+
+    _t.sleep(0.3)
     assert worker._injector.inject.call_count == 1
     worker._loop.call_soon_threadsafe(worker._loop.stop)
 
@@ -133,5 +151,6 @@ def test_connection_loss_cleanup_failure_injects_raw_once(tmp_path):
     worker._recording = True
     worker._buffer.add_partial("raw fallback")
     worker._stop_recording_on_connection_lost()
+    assert _wait_for_inject(worker._injector.inject, 1)
     worker._injector.inject.assert_called_once_with("raw fallback")
     worker._loop.call_soon_threadsafe(worker._loop.stop)

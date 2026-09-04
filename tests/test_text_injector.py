@@ -149,11 +149,14 @@ def test_inject_fallback_logic():
     injector = TextInjector()
 
     with patch.object(injector, "_clipboard_inject", return_value=True), \
+         patch.object(injector, "_sendinput_batch") as mock_batch, \
          patch.object(injector, "_sendinput_inject") as mock_sendinput:
         assert injector.inject("hello") is True
+        mock_batch.assert_not_called()
         mock_sendinput.assert_not_called()
 
     with patch.object(injector, "_clipboard_inject", return_value=False), \
+         patch.object(injector, "_sendinput_batch", return_value=False), \
          patch.object(injector, "_sendinput_inject", return_value=True) as mock_sendinput:
         assert injector.inject("hello") is True
         mock_sendinput.assert_called_once_with("hello", typing_speed=None)
