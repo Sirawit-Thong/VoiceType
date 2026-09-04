@@ -99,3 +99,38 @@ def test_finalize_uses_cleanup_when_enabled(tmp_path):
     worker._finalize_and_inject()
     worker._injector.inject.assert_called_once_with("Cleaned.")
     worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def test_connection_loss_flush_routes_through_cleanup(tmp_path):
+    worker = _worker(tmp_path, FakeCleanup(result="Cleaned after drop."))
+    worker._loop = _running_loop()
+    worker._recording = True
+    worker._buffer.add_partial("raw after drop")
+    worker._stop_recording_on_connection_lost()
+    worker._injector.inject.assert_called_once_with("Cleaned after drop.")
+    assert worker._recording is False
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def test_connection_loss_duplicate_of_just_injected_final_is_suppressed(tmp_path):
+    worker = _worker(tmp_path, FakeCleanup(result="Same."))
+    worker._loop = _running_loop()
+    worker._recording = True
+    worker._buffer.add_partial("same")
+    worker._finalize_and_inject()
+    assert worker._injector.inject.call_count == 1
+    worker._recording = True
+    worker._buffer.add_partial("same")
+    worker._stop_recording_on_connection_lost()
+    assert worker._injector.inject.call_count == 1
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
+
+
+def test_connection_loss_cleanup_failure_injects_raw_once(tmp_path):
+    worker = _worker(tmp_path, FakeCleanup(exc=RuntimeError("cleanup down")))
+    worker._loop = _running_loop()
+    worker._recording = True
+    worker._buffer.add_partial("raw fallback")
+    worker._stop_recording_on_connection_lost()
+    worker._injector.inject.assert_called_once_with("raw fallback")
+    worker._loop.call_soon_threadsafe(worker._loop.stop)
