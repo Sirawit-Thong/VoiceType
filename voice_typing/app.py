@@ -396,16 +396,7 @@ class WorkerThread(QThread):
             cleaned = text
         self._inject(cleaned.strip() or text if isinstance(cleaned, str) else text)
 
-    def _finalize_and_inject(self, keep_recording: bool = False) -> None:
-        with self._lock:
-            if not self._recording:
-                return
-            if not keep_recording:
-                self._recorder.stop()
-                self._recording = False
-        if not keep_recording:
-            self._signals.recording_stopped.emit()
-        text = self._buffer.finalize()
+    def _emit_final_text(self, text: str) -> None:
         if not text.strip():
             return
         now = time.monotonic()
@@ -441,14 +432,25 @@ class WorkerThread(QThread):
                 pass
             self._inject(text)
 
+    def _finalize_and_inject(self, keep_recording: bool = False) -> None:
+        with self._lock:
+            if not self._recording:
+                return
+            if not keep_recording:
+                self._recorder.stop()
+                self._recording = False
+        if not keep_recording:
+            self._signals.recording_stopped.emit()
+        text = self._buffer.finalize()
+        self._emit_final_text(text)
+
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
         self._signals.partial_received.emit(text)
 
     def _on_final(self, text: str) -> None:
         if not self._supports_streaming:
-            if text and text.strip():
-                self._inject_with_cleanup(text)
+            self._emit_final_text(text)
             return
         if text:
             self._buffer.add_partial(text)
