@@ -14,7 +14,7 @@
 | Net | websockets, aiohttp | >=12.0, >=3.9.0 | Streaming STT + HTTP batch APIs |
 | Secrets | keyring | >=25.0 | Windows Credential Manager vault |
 | Env | uv + `.venv` | — | No bare `python` on PATH; use `uv run` |
-| Tests | pytest, pytest-asyncio | >=8.0, >=0.23 | `asyncio_mode = "auto"`, 30 test files |
+| Tests | pytest, pytest-asyncio | >=8.0, >=0.23 | `asyncio_mode = "auto"`, 265 suite |
 | CI | GitHub Actions | — | `.github/workflows/ci.yml` + README badge |
 
 ## Architecture
@@ -29,7 +29,7 @@ speech/ (engine, gemini_live) · audio/recorder.py · ai/text_processor.py (lega
 windows/ (hotkey, text_injector, startup) · ui/ (settings_window, tray, status_bar)
 ```
 
-**Worker routing**: streaming providers get live audio; batch providers transcribe on hotkey release; vault keys overlay plaintext via `_settings_dict_with_vault()` (never mutates stored dict).
+**Worker routing**: streaming providers get live audio; batch providers transcribe on hotkey release; vault keys overlay plaintext via `_settings_dict_with_vault()` (never mutates stored dict); `_emit_final_text()` shared helper owns empty-guard + 0.5s dedup + cleanup→processor→direct precedence for all final paths.
 
 ## Naming & Conventions
 

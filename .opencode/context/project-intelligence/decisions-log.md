@@ -1,4 +1,4 @@
-<!-- Context: project-intelligence/decisions | Priority: medium | Version: 1.0 | Updated: 2026-09-04 -->
+<!-- Context: project-intelligence/decisions | Priority: medium | Version: 1.1 | Updated: 2026-09-04 -->
 
 # VoiceType Decisions Log
 
@@ -11,16 +11,20 @@
 | 2026-09 | Added `numpy>=1.26`, `keyring>=25.0` to `pyproject.toml` | CI failed on missing deps | Green CI on clean runners |
 | 2026-09 | `uv.lock` + `docs/` stay out of git | Repro via `uv`, plans are working notes | Commit with explicit paths only |
 | 2026-09 | Qt tests assert `isHidden()`, not `isVisible()` | `isVisible()` is False for unshown windows | Fixed banner test blocker |
-| 2026-09 | Test isolation kill-switch for live vault (Task 11) | Suite must pass WITH WinVaultKeyring present | Pending — see living-notes |
+| 2026-09 | Kill-switch `VOICETYPE_CREDSTORE_DISABLED` in 6 test files | Suite must pass WITH live WinVaultKeyring present | All 265 tests green on any machine |
+| 2026-09 | Extract `_emit_final_text()` shared helper (Fix A) | Dedup + cleanup→processor→direct precedence in one place | Streaming + batch + connection-loss share logic |
+| 2026-09 | Settings save preserves distinct cleanup provider id (Fix B) | Overwriting cleanup id on save broke cleanup provider memory | `PROVIDER_PRESETS` membership check; unknown/empty fall through |
+| 2026-09 | Connection-loss flush routes through shared helper (Fix C) | `_stop_recording_on_connection_lost` bypassed cleanup + dedup | Now same path as hotkey release + batch final |
 
 ## Alternatives Considered
 
 - Vault-only storage → rejected: breaks vault-less machines
 - `sys.modules` delitem to simulate no-backend → failed with real keyring installed; use `setitem(..., None)` or kill-switch
+- conftest.py vault isolation → rejected: would break `test_credential_store.py` fake keyring tests; per-file fixtures chosen instead
 
 ## 📂 Codebase References
 
-**Vault**: `voice_typing/config/credential_store.py` · **Migration**: `voice_typing/config/settings.py` (`migrate_keys_to_vault`) · **Deps**: `pyproject.toml` · **CI**: `.github/workflows/ci.yml`
+**Vault**: `voice_typing/config/credential_store.py` · **Migration**: `voice_typing/config/settings.py` (`migrate_keys_to_vault`) · **Helper**: `voice_typing/app.py` (`_emit_final_text`) · **Settings**: `voice_typing/ui/settings_window.py` (`_save_and_close`) · **Deps**: `pyproject.toml` · **CI**: `.github/workflows/ci.yml`
 
 ## Related Files
 
