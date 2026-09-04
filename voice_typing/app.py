@@ -21,6 +21,18 @@ from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
 from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
+from voice_typing.providers.audio import pcm_to_wav_bytes
+from voice_typing.providers.contracts import (
+    ErrorCategory,
+    EventKind,
+    ProviderConfigurationError,
+    ProviderProfile,
+    SpeechProvider,
+    TranscriptEvent,
+    build_profile,
+)
+from voice_typing.providers.redaction import redact_text
+from voice_typing.providers.registry import Factory, default_factory
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.tray import TrayIcon
@@ -63,9 +75,10 @@ class WorkerSignals(QObject):
 
 
 class WorkerThread(QThread):
-    def __init__(self, settings: SettingsManager) -> None:
+    def __init__(self, settings: SettingsManager, provider_factory: Factory | None = None) -> None:
         super().__init__()
         self._settings = settings
+        self._provider_factory: Factory = provider_factory or default_factory
         self._signals = WorkerSignals()
         self._recorder = AudioRecorder()
         self._buffer = TranscriptBuffer()
@@ -73,7 +86,12 @@ class WorkerThread(QThread):
         self._hotkey_mgr = HotkeyManager()
         self._current_hotkey_vk: int | None = None
         self._current_language: str = "auto"
-        self._client: GeminiLiveClient | None = None
+        self._provider: SpeechProvider | None = None
+        self._client: SpeechProvider | None = None
+        self._profile: ProviderProfile | None = None
+        self._supports_streaming = True
+        self._pcm_buffer = bytearray()
+        self._cleanup_provider = None
         self._processor: TextProcessor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = threading.Lock()
