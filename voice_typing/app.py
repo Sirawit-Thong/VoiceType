@@ -869,20 +869,61 @@ class VoiceTypeApp:
 
 
     def _run_setup_wizard(self) -> None:
-        if self._settings.get("api_key"):
+        from voice_typing.providers.contracts import build_profile as _build_profile
+        from voice_typing.providers.presets import PROVIDER_ORDER as _ORDER
+        from voice_typing.providers.presets import PROVIDER_PRESETS as _PRESETS
+        from voice_typing.providers.registry import build_default_registry as _registry
+        from voice_typing.providers.registry import supports_dictation as _supports
+
+        snapshot = _build_profile(self._settings.as_dict())
+        if _supports(snapshot, _registry()) is None:
             return
-        api_key, ok = QInputDialog.getText(
-            None, "VoiceType Setup", "Enter your Gemini API Key:"
+        labels = [_PRESETS[pid].label for pid in _ORDER]
+        label, ok = QInputDialog.getItem(
+            None, "VoiceType Setup", "Choose speech provider:", labels, 0, False
         )
-        if ok and api_key.strip():
-            self._settings.set("api_key", api_key.strip())
-            self._settings.save()
-        else:
+        if not ok:
             QMessageBox.warning(
                 None,
                 "VoiceType Setup",
-                "No API key entered. You can configure it later in Settings.",
+                "No provider selected. You can configure it later in Settings.",
             )
+            return
+        try:
+            provider_id = _ORDER[labels.index(label)]
+        except ValueError:
+            provider_id = "gemini_live"
+        preset = _PRESETS[provider_id]
+        profiles = self._settings.get("provider_profiles", {})
+        profiles = dict(profiles) if isinstance(profiles, dict) else {}
+        profile = dict(profiles.get(provider_id, {}))
+        if preset.needs_api_key:
+            api_key, ok = QInputDialog.getText(
+                None, "VoiceType Setup", f"Enter API key for {preset.label}:"
+            )
+            if not ok or not api_key.strip():
+                QMessageBox.warning(
+                    None,
+                    "VoiceType Setup",
+                    "No API key entered. You can configure it later in Settings.",
+                )
+                return
+            profile["api_key"] = api_key.strip()
+        if provider_id in ("openai_compatible", "freellm"):
+            base_url, ok = QInputDialog.getText(
+                None, "VoiceType Setup", "Enter base URL (for example http://localhost:1234/v1):"
+            )
+            if ok and base_url.strip():
+                profile["base_url"] = base_url.strip()
+        if preset.default_model and not str(profile.get("model", "") or "").strip():
+            profile["model"] = preset.default_model
+        profiles[provider_id] = profile
+        self._settings.set("provider_profiles", profiles)
+        self._settings.set("provider_id", provider_id)
+        if provider_id == "gemini_live":
+            self._settings.set("api_key", profile.get("api_key", ""))
+            self._settings.set("model", profile.get("model", ""))
+        self._settings.save()
 
     def _exit(self, force_exit: bool = True) -> None:
         try:
