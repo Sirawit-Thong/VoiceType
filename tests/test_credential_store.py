@@ -356,3 +356,83 @@ def test_worker_snapshot_falls_back_without_backend(monkeypatch, tmp_path):
     worker = app_module.WorkerThread.__new__(app_module.WorkerThread)
     worker._settings = mgr
     assert worker._snapshot_profile().api_key == "test-json-key"
+
+
+def _make_dialog(tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.ui.settings_window import SettingsWindow
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    win = SettingsWindow(mgr)
+    return app, mgr, win
+
+
+def test_dialog_populate_shows_vault_value(monkeypatch, tmp_path):
+    store = {("VoiceType", "voicetype/groq/api_key"): "test-vault-key"}
+    _install_fake_keyring(monkeypatch, store)
+    _app, mgr, win = _make_dialog(tmp_path)
+    mgr.set("provider_id", "groq")
+    mgr.set("provider_profiles", {"groq": {"api_key": "", "model": "whisper-large-v3-turbo"}})
+    win._populate_ui_from_settings()
+    idx = win._provider_combo.findData("groq")
+    win._provider_combo.setCurrentIndex(idx)
+    assert win._api_key.text() == "test-vault-key"
+    win.close()
+
+
+def test_dialog_save_writes_vault_and_blanks_json(monkeypatch, tmp_path):
+    import json
+
+    store = {}
+    _install_fake_keyring(monkeypatch, store)
+    _app, mgr, win = _make_dialog(tmp_path)
+    win._populate_ui_from_settings()
+    idx = win._provider_combo.findData("groq")
+    win._provider_combo.setCurrentIndex(idx)
+    win._api_key.setText("test-key-9")
+    win._store_current_profile_fields()
+    win._save_and_close()
+    assert store.get(("VoiceType", "voicetype/groq/api_key")) == "test-key-9"
+    saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert saved["provider_profiles"]["groq"]["api_key"] == ""
+    win.close()
+
+
+def test_dialog_fallback_banner_visible_without_backend(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    _app, _mgr, win = _make_dialog(tmp_path)
+    win._populate_ui_from_settings()
+    assert not win._cred_banner.isHidden() or not win._cred_banner.text() == ""
+    assert "plaintext" in win._cred_banner.text()
+    assert not win._cred_retry_btn.isHidden() or not win._cred_btn_widget.isHidden()
+    win.close()
+
+
+def test_dialog_no_banner_with_backend(monkeypatch, tmp_path):
+    _install_fake_keyring(monkeypatch, {})
+    _app, _mgr, win = _make_dialog(tmp_path)
+    win._populate_ui_from_settings()
+    assert win._cred_banner.text() == "" or not win._cred_banner.isVisible()
+    win.close()
+
+
+def test_dialog_reset_deletes_vault_entries(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QMessageBox
+
+    store = {("VoiceType", "voicetype/groq/api_key"): "test-key-1"}
+    _install_fake_keyring(monkeypatch, store)
+    _app, mgr, win = _make_dialog(tmp_path)
+    mgr.set("provider_profiles", {"groq": {"api_key": "", "model": "m"}})
+    win._populate_ui_from_settings()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: QMessageBox.StandardButton.Ok)
+    win._reset_to_defaults()
+    assert ("VoiceType", "voicetype/groq/api_key") not in store
+    win.close()

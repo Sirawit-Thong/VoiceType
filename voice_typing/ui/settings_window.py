@@ -379,6 +379,26 @@ class SettingsWindow(QDialog):
         layout.setVerticalSpacing(12)
         layout.setHorizontalSpacing(16)
 
+        self._cred_banner = QLabel()
+        self._cred_banner.setWordWrap(True)
+        self._cred_banner.setStyleSheet("color: #fbbc04; font-size: 12px;")
+        self._cred_banner.setVisible(False)
+        layout.addRow(self._cred_banner)
+        _cred_btn_row = QHBoxLayout()
+        self._cred_retry_btn = QPushButton("Retry secure storage")
+        self._cred_retry_btn.setVisible(False)
+        self._cred_retry_btn.clicked.connect(self._retry_credential_backend)
+        self._cred_learn_btn = QPushButton("Learn more")
+        self._cred_learn_btn.setVisible(False)
+        self._cred_learn_btn.clicked.connect(self._show_credential_help)
+        _cred_btn_row.addWidget(self._cred_retry_btn)
+        _cred_btn_row.addWidget(self._cred_learn_btn)
+        _cred_btn_row.addStretch()
+        self._cred_btn_widget = QWidget()
+        self._cred_btn_widget.setLayout(_cred_btn_row)
+        self._cred_btn_widget.setVisible(False)
+        layout.addRow(self._cred_btn_widget)
+
         self._provider_combo = QComboBox()
         for pid in PROVIDER_ORDER:
             self._provider_combo.addItem(PROVIDER_PRESETS[pid].label, pid)
@@ -625,12 +645,23 @@ class SettingsWindow(QDialog):
         self._sensitivity_slider.setValue(sens_val)
         self._update_sensitivity_label(self._sensitivity_slider.value())
 
-        # Provider profiles working copy
+        # Provider profiles working copy (vault values overlaid for display only)
         raw_profiles = self._settings.get("provider_profiles", {})
         if isinstance(raw_profiles, dict):
             self._profiles = {str(k): dict(v) if isinstance(v, dict) else {} for k, v in raw_profiles.items()}
         else:
             self._profiles = {}
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _overlay_src = {"provider_profiles": self._profiles}
+            for _pid, _prof in self._profiles.items():
+                _live = _cs.resolve_profile_key(_overlay_src, _pid)
+                if _live:
+                    _prof["api_key"] = _live
+        except Exception:
+            pass
+        self._refresh_credential_banner()
         provider_id = str(self._settings.get("provider_id", "gemini_live") or "gemini_live")
         if provider_id not in PROVIDER_PRESETS:
             provider_id = "gemini_live"
@@ -654,6 +685,75 @@ class SettingsWindow(QDialog):
         else:
             self._fast_mode.setChecked(self._settings.get("fast_mode", True))
         self._custom_vocab.setText(self._settings.get("custom_vocabulary", ""))
+
+    def _refresh_credential_banner(self) -> None:
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            available = _cs.is_secure_backend_available()
+        except Exception:
+            available = False
+        if available:
+            self._cred_banner.setText("")
+            self._cred_banner.setVisible(False)
+            self._cred_btn_widget.setVisible(False)
+            self._cred_retry_btn.setVisible(False)
+            self._cred_learn_btn.setVisible(False)
+            return
+        expect_vault = False
+        try:
+            raw = self._settings.get("provider_profiles", {})
+            if isinstance(raw, dict):
+                for _prof in raw.values():
+                    if isinstance(_prof, dict) and "api_key" in _prof and not str(_prof.get("api_key") or ""):
+                        expect_vault = True
+                        break
+        except Exception:
+            expect_vault = False
+        if expect_vault:
+            self._cred_banner.setText(
+                "Secure credential storage is unavailable — saved keys cannot be read. "
+                "Re-enter the key or choose Retry."
+            )
+            self._cred_banner.setStyleSheet("color: #ea4335; font-size: 12px;")
+        else:
+            self._cred_banner.setText(
+                "Secure credential storage is unavailable — API keys are stored as plaintext in settings.json."
+            )
+            self._cred_banner.setStyleSheet("color: #fbbc04; font-size: 12px;")
+        self._cred_banner.setVisible(True)
+        self._cred_btn_widget.setVisible(True)
+        self._cred_retry_btn.setVisible(True)
+        self._cred_learn_btn.setVisible(True)
+
+    def _retry_credential_backend(self) -> None:
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _cs.refresh_backend_cache()
+            if _cs.is_secure_backend_available():
+                src = {"provider_profiles": self._profiles}
+                for _pid, _prof in self._profiles.items():
+                    _live = _cs.resolve_profile_key(src, _pid)
+                    if _live:
+                        _prof["api_key"] = _live
+                self._refresh_provider_fields(self._active_provider_id)
+        except Exception:
+            pass
+        self._refresh_credential_banner()
+
+    def _show_credential_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "Secure Credential Storage",
+            "VoiceType stores API keys in Windows Credential Manager (service 'VoiceType', "
+            "account 'voicetype/{provider}/api_key') protected by DPAPI.\n\n"
+            "This warning means no usable credential backend was found, so keys fall back to "
+            "plaintext in %APPDATA%/VoiceType/settings.json.\n\n"
+            "To use secure storage, ensure Windows Credential Manager is available, then press Retry. "
+            "Deleting settings.json alone does not delete vault credentials; remove them under "
+            "Control Panel > Credential Manager > Windows Credentials > VoiceType.",
+        )
 
     def _set_row_visible(self, label: QLabel, field: QWidget, visible: bool) -> None:
         label.setVisible(visible)
@@ -727,8 +827,17 @@ class SettingsWindow(QDialog):
         provider_id = str(self._provider_combo.currentData() or self._active_provider_id)
         if provider_id not in PROVIDER_PRESETS:
             return
+        _widgets_profile = self._current_profile_from_widgets(provider_id)
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _live_key = _cs.resolve_profile_key({"provider_profiles": {provider_id: _widgets_profile}}, provider_id)
+            if _live_key:
+                _widgets_profile["api_key"] = _live_key
+        except Exception:
+            pass
         snapshot = build_profile(
-            {"provider_id": provider_id, "provider_profiles": {provider_id: self._current_profile_from_widgets(provider_id)}},
+            {"provider_id": provider_id, "provider_profiles": {provider_id: _widgets_profile}},
             provider_id,
         )
         from voice_typing.providers.registry import supports_dictation as _supports
@@ -829,6 +938,14 @@ class SettingsWindow(QDialog):
         preset = PROVIDER_PRESETS.get(provider_id)
         self._store_current_profile_fields()
         profile_dict = dict(self._profiles.get(provider_id, {}))
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _live_key = _cs.resolve_profile_key({"provider_profiles": {provider_id: profile_dict}}, provider_id)
+            if _live_key:
+                profile_dict["api_key"] = _live_key
+        except Exception:
+            pass
         if preset is not None and preset.needs_api_key and not str(profile_dict.get("api_key", "") or "").strip():
             QMessageBox.warning(self, "API Key Required", "Enter an API Key to test.")
             return
@@ -843,12 +960,19 @@ class SettingsWindow(QDialog):
     def _on_api_key_tested(self, success: bool, msg: str) -> None:
         self._test_key_btn.setEnabled(True)
         self._test_key_btn.setText("Test Key")
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _posture = _cs.posture_token()
+        except Exception:
+            _posture = "credential_store=fallback(plaintext)"
+        msg = f"{redact_text(msg)[:800]}\n{_posture}"
         if success:
             self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
-            QMessageBox.information(self, "API Key Test", redact_text(msg)[:800])
+            QMessageBox.information(self, "API Key Test", msg)
         else:
             self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
-            QMessageBox.warning(self, "API Key Test", redact_text(msg)[:800])
+            QMessageBox.warning(self, "API Key Test", msg)
 
     def _load_models(self) -> None:
         provider_id = self._active_provider_id
@@ -860,6 +984,14 @@ class SettingsWindow(QDialog):
             return
         self._store_current_profile_fields()
         profile_dict = dict(self._profiles.get(provider_id, {}))
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _live_key = _cs.resolve_profile_key({"provider_profiles": {provider_id: profile_dict}}, provider_id)
+            if _live_key:
+                profile_dict["api_key"] = _live_key
+        except Exception:
+            pass
         if preset.needs_api_key and not str(profile_dict.get("api_key", "") or "").strip():
             QMessageBox.warning(
                 self, "API Key Required", "Enter your API key first."
@@ -902,6 +1034,16 @@ class SettingsWindow(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
+            try:
+                from voice_typing.config import credential_store as _cs
+
+                for _pid in list(self._profiles.keys()):
+                    try:
+                        _cs.delete_api_key(str(_pid))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             for k, v in DEFAULT_SETTINGS.items():
                 self._settings.set(k, v)
             self._populate_ui_from_settings()
@@ -928,6 +1070,24 @@ class SettingsWindow(QDialog):
         if provider_id == "gemini_live":
             self._settings.set("api_key", str(active.get("api_key", "") or ""))
             self._settings.set("model", _normalize_model(str(active.get("model", "") or ""), "gemini_live"))
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            if _cs.is_secure_backend_available():
+                persisted = self._settings.get("provider_profiles", {})
+                if isinstance(persisted, dict):
+                    for _pid, _prof in persisted.items():
+                        if isinstance(_prof, dict):
+                            _key = str(_prof.get("api_key", "") or "")
+                            if _key and _cs.set_api_key(str(_pid), _key):
+                                _prof["api_key"] = ""
+                                if _pid in self._profiles and isinstance(self._profiles[_pid], dict):
+                                    self._profiles[_pid]["api_key"] = ""
+                _legacy = str(self._settings.get("api_key", "") or "")
+                if _legacy and _cs.set_api_key("gemini_live", _legacy):
+                    self._settings.set("api_key", "")
+        except Exception:
+            pass
         self._settings.set("fast_mode", self._fast_mode.isChecked())
         self._settings.set("text_cleanup", {"enabled": not self._fast_mode.isChecked(), "provider_id": provider_id})
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
