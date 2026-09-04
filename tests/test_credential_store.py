@@ -318,3 +318,41 @@ def test_settings_load_never_breaks_on_vault_error(monkeypatch, tmp_path):
     mgr = SettingsManager(path)
     mgr.load()
     assert mgr.get("mode") == "push_to_talk"
+
+
+def test_worker_snapshot_overlays_vault_key(monkeypatch, tmp_path):
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.providers.contracts import build_profile
+
+    store = {("VoiceType", "voicetype/groq/api_key"): "test-vault-key"}
+    _install_fake_keyring(monkeypatch, store)
+    import voice_typing.app as app_module
+
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("provider_id", "groq")
+    mgr.set("provider_profiles", {"groq": {"api_key": "", "model": "whisper-large-v3-turbo"}})
+    worker = app_module.WorkerThread.__new__(app_module.WorkerThread)
+    worker._settings = mgr
+    profile = worker._snapshot_profile()
+    assert profile.api_key == "test-vault-key"
+    # The file-backed dict is never back-filled with the secret.
+    assert mgr.get("provider_profiles")["groq"]["api_key"] == ""
+    # build_profile itself is unchanged: raw dict in, same value out.
+    assert build_profile({"provider_profiles": {"groq": {"api_key": "x"}}}, "groq").api_key == "x"
+
+
+def test_worker_snapshot_falls_back_without_backend(monkeypatch, tmp_path):
+    from voice_typing.config.settings import SettingsManager
+
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    cs.refresh_backend_cache()
+    import voice_typing.app as app_module
+
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("provider_id", "groq")
+    mgr.set("provider_profiles", {"groq": {"api_key": "test-json-key"}})
+    worker = app_module.WorkerThread.__new__(app_module.WorkerThread)
+    worker._settings = mgr
+    assert worker._snapshot_profile().api_key == "test-json-key"

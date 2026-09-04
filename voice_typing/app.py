@@ -231,7 +231,14 @@ class WorkerThread(QThread):
     def update_settings(self) -> None:
         self.reconfigure_hotkey()
         self._silence_threshold = self._settings.get("silence_threshold", 0.005)
-        api_key = self._settings.get("api_key", "")
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            api_key = _cs.resolve_profile_key(self._settings.as_dict(), "gemini_live") or self._settings.get(
+                "api_key", ""
+            )
+        except Exception:
+            api_key = self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
             self._processor = TextProcessor(
                 api_key=api_key,
@@ -356,11 +363,11 @@ class WorkerThread(QThread):
         profile = self._profile or self._snapshot_profile()
         cleanup_id = str(cfg.get("provider_id", "") or "") or profile.provider_id
         if cleanup_id == "gemini_live":
-            source = profile if profile.provider_id == "gemini_live" else build_profile(self._settings.as_dict(), "gemini_live")
+            source = profile if profile.provider_id == "gemini_live" else build_profile(self._settings_dict_with_vault(), "gemini_live")
             if not source.api_key.strip():
                 return None
             return GeminiCleanupProvider(api_key=source.api_key, model=source.model)
-        other = build_profile(self._settings.as_dict(), cleanup_id)
+        other = build_profile(self._settings_dict_with_vault(), cleanup_id)
         preset = PROVIDER_PRESETS.get(cleanup_id)
         base_url = other.base_url.strip() or (preset.default_base_url if preset is not None else "")
         model = other.model.strip() or (preset.default_model if preset is not None else "")
@@ -451,8 +458,36 @@ class WorkerThread(QThread):
             )
         )
 
+    def _settings_dict_with_vault(self) -> dict:
+        """Return a copy of settings with live vault keys overlaid.
+
+        Vault values win when the backend is available; otherwise the
+        plaintext JSON values are kept. The manager's stored dict is
+        never mutated and the file is never back-filled with secrets.
+        """
+        data = self._settings.as_dict()
+        try:
+            from voice_typing.config import credential_store as _cs
+        except ImportError:
+            return data
+        try:
+            profiles = data.get("provider_profiles")
+            if isinstance(profiles, dict) and profiles:
+                overlaid: dict = {}
+                for pid, raw in profiles.items():
+                    entry = dict(raw) if isinstance(raw, dict) else {}
+                    if isinstance(pid, str) and pid:
+                        live = _cs.resolve_profile_key(data, pid)
+                        if live:
+                            entry["api_key"] = live
+                    overlaid[pid] = entry
+                data["provider_profiles"] = overlaid
+        except Exception:
+            pass
+        return data
+
     def _snapshot_profile(self) -> ProviderProfile:
-        return build_profile(self._settings.as_dict())
+        return build_profile(self._settings_dict_with_vault())
 
     def _on_provider_event(self, event: TranscriptEvent) -> None:
         if event.kind == EventKind.PARTIAL:
@@ -611,8 +646,14 @@ class WorkerThread(QThread):
                     return
         self._signals.status.emit("Ready")
         if not self._settings.get("fast_mode", True):
+            try:
+                from voice_typing.config import credential_store as _cs
+
+                _vault_key = _cs.resolve_profile_key(self._settings.as_dict(), "gemini_live")
+            except Exception:
+                _vault_key = ""
             self._processor = TextProcessor(
-                api_key=self._settings.get("api_key", ""),
+                api_key=_vault_key or self._settings.get("api_key", ""),
                 vocabulary=self._settings.get("custom_vocabulary", ""),
             )
         while not self._should_stop:
@@ -932,6 +973,22 @@ class VoiceTypeApp:
         from voice_typing.providers.registry import supports_dictation as _supports
 
         settings_data = self._settings.as_dict()
+        try:
+            from voice_typing.config import credential_store as _cs
+
+            _wiz_profiles = settings_data.get("provider_profiles")
+            if isinstance(_wiz_profiles, dict) and _wiz_profiles:
+                _wiz_overlaid: dict = {}
+                for _pid, _raw in _wiz_profiles.items():
+                    _entry = dict(_raw) if isinstance(_raw, dict) else {}
+                    if isinstance(_pid, str) and _pid:
+                        _live = _cs.resolve_profile_key(settings_data, _pid)
+                        if _live:
+                            _entry["api_key"] = _live
+                    _wiz_overlaid[_pid] = _entry
+                settings_data["provider_profiles"] = _wiz_overlaid
+        except Exception:
+            pass
         current_id = str(settings_data.get("provider_id", "gemini_live") or "gemini_live")
         current_preset = _PRESETS.get(current_id)
         if current_preset is not None:
