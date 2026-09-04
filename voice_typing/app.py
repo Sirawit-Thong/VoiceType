@@ -110,6 +110,8 @@ class WorkerThread(QThread):
         self._last_injected = ""
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
+        self._undo_available = False
+        self._current_undo_vk: int | None = None
         self._last_level = 0.0
         self._silence_threshold: float = self._settings.get("silence_threshold", 0.005)
         self._history_path = Path(self._settings._path).parent / "history.json"
@@ -218,6 +220,7 @@ class WorkerThread(QThread):
         self._signals.status.emit("Ready")
 
     def reconfigure_hotkey(self) -> None:
+        from voice_typing.windows.hotkey import MOD_CONTROL, MOD_SHIFT
         new_vk = self._settings.get("hotkey", DEFAULT_HOTKEY)
         if self._current_hotkey_vk is not None and self._current_hotkey_vk != new_vk:
             self._hotkey_mgr.unregister(self._current_hotkey_vk)
@@ -229,6 +232,16 @@ class WorkerThread(QThread):
             on_release=release_cb,
         )
         self._current_hotkey_vk = new_vk
+        undo_vk = self._settings.get("undo_hotkey_vk", 0x5A)
+        if self._current_undo_vk is not None and self._current_undo_vk != undo_vk:
+            self._hotkey_mgr.unregister(self._current_undo_vk)
+        if undo_vk != new_vk:
+            self._hotkey_mgr.register(
+                undo_vk,
+                self._undo_last,
+                modifiers=MOD_CONTROL | MOD_SHIFT,
+            )
+            self._current_undo_vk = undo_vk
 
     def update_settings(self) -> None:
         self.reconfigure_hotkey()
@@ -308,6 +321,7 @@ class WorkerThread(QThread):
         text = auto_space(self._last_injected, text)
         self._last_injected = text
         if self._injector.inject(text):
+            self._undo_available = True
             self._append_history(raw)
             if self._settings.get("copy_to_clipboard", False):
                 try:
@@ -322,7 +336,19 @@ class WorkerThread(QThread):
             return
         text = auto_space(self._last_injected, text)
         self._last_injected = text
-        self._injector.inject(text)
+        if self._injector.inject(text):
+            self._undo_available = True
+
+    def _undo_last(self, vk_code: int = 0) -> None:
+        if not self._undo_available or not self._last_injected:
+            return
+        try:
+            ok = self._injector.delete_chars(len(self._last_injected))
+        except Exception:
+            ok = False
+        if ok:
+            self._undo_available = False
+            self._last_injected = ""
 
     def _load_history(self) -> list[dict]:
         from voice_typing.history import parse_history_list, trim_history
