@@ -33,8 +33,8 @@ def settings(tmp_path):
 def test_settings_window_init_and_tabs(settings):
     win = SettingsWindow(settings)
     assert win.windowTitle() == "VoiceType Settings"
-    assert win.minimumWidth() >= 550
-    assert win.minimumHeight() >= 480
+    assert win.minimumWidth() >= 350
+    assert win.minimumHeight() >= 300
 
     # Verify slider labels are initialized properly (not empty strings!)
     assert win._opacity_label.text() == f"{int(settings.get('opacity', 0.94) * 100)}%"

@@ -177,6 +177,7 @@ class StatusBar:
         self._wave: _WaveVisualizer | None = None
         self._status_label: QLabel | None = None
         self._menu_button: QPushButton | None = None
+        self._tray_btn: QPushButton | None = None
         self._recording = False
         self._hovered = False
         self._level = 0.0
@@ -252,8 +253,8 @@ class StatusBar:
         capsule.setObjectName("capsule")
         capsule.setCursor(Qt.CursorShape.OpenHandCursor)
         capsule.setStyleSheet(
-            "#capsule { background-color: rgba(20, 21, 24, 0.94); "
-            "border-radius: 18px; border: 1px solid rgba(255, 255, 255, 0.12); }"
+            "#capsule { background-color: rgba(26, 27, 30, 0.95); "
+            "border-radius: 18px; border: 1px solid #3c4043; }"
         )
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(24)
@@ -270,8 +271,8 @@ class StatusBar:
         self._mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mic_button.setToolTip("Start / Stop recording")
         self._mic_button.setStyleSheet(
-            "QPushButton { background: transparent; border: none; border-radius: 12px; }"
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.15); }"
+            "QPushButton { background: transparent; color: #9aa0a6; border: none; border-radius: 12px; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); color: #e8eaed; }"
         )
         self._mic_button.clicked.connect(self._on_toggle)
 
@@ -285,7 +286,19 @@ class StatusBar:
 
         self._status_label = QLabel("")
         self._status_label.setMaximumWidth(100)
-        self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px; font-weight: 500;")
+        self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px; font-weight: 500; font-family: 'Segoe UI', sans-serif;")
+
+        self._tray_btn = QPushButton("─")
+        self._tray_btn.setObjectName("tray_btn")
+        self._tray_btn.setFixedSize(24, 24)
+        self._tray_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tray_btn.setToolTip("Minimize to tray")
+        self._tray_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #9aa0a6; border: none; "
+            "font-size: 14px; font-weight: bold; border-radius: 12px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.08); color: #e8eaed; }"
+        )
+        self._tray_btn.clicked.connect(self._minimize_to_tray)
 
         self._menu_button = QPushButton("⋯")
         self._menu_button.setFixedSize(20, 20)
@@ -294,7 +307,7 @@ class StatusBar:
         self._menu_button.setStyleSheet(
             "QPushButton { background: transparent; color: #9aa0a6; border: none; "
             "border-radius: 10px; font-size: 14px; font-weight: bold; padding-bottom: 2px; }"
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); "
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); "
             "color: #e8eaed; }"
         )
         self._menu_button.clicked.connect(self._show_menu)
@@ -306,6 +319,7 @@ class StatusBar:
         row.addWidget(self._wave)
         row.addWidget(self._status_label)
         row.addStretch(1)
+        row.addWidget(self._tray_btn)
         row.addWidget(self._menu_button)
 
         root = QVBoxLayout(win)
@@ -346,6 +360,10 @@ class StatusBar:
             self._menu_button.mapToGlobal(QPoint(0, self._menu_button.height()))
         )
 
+    def _minimize_to_tray(self) -> None:
+        """Hide status bar and let tray icon handle interaction."""
+        self._window.hide()
+
     def _on_toggle(self) -> None:
         if self._recording:
             self.signals.stop_recording.emit()
@@ -369,6 +387,8 @@ class StatusBar:
             self._status_label.setVisible(should_expand)
         if self._menu_button is not None:
             self._menu_button.setVisible(should_expand)
+        if self._tray_btn is not None:
+            self._tray_btn.setVisible(should_expand)
 
         self._animate_width(target_width)
 
@@ -457,6 +477,7 @@ class StatusBar:
             self._wave = None
             self._status_label = None
             self._menu_button = None
+            self._tray_btn = None
 
     def show(self) -> None:
         if self._window is None:
@@ -519,9 +540,9 @@ class StatusBar:
             if state == "listening":
                 border_css = f"border: 1.5px solid {self._state_color};"
             else:
-                border_css = "border: 1.5px solid rgba(255, 255, 255, 0.12);"
+                border_css = "border: 1.5px solid #3c4043;"
             self._capsule.setStyleSheet(
-                f"#capsule {{ background-color: rgba(20, 21, 24, 0.94); "
+                f"#capsule {{ background-color: rgba(26, 27, 30, 0.95); "
                 f"border-radius: 18px; {border_css} }}"
             )
         title = titles.get(state, state.title())

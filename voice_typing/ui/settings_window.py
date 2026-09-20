@@ -144,46 +144,83 @@ class SettingsWindow(QDialog):
             icon_path = get_asset_path("icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.setMinimumSize(600, 580)
+        self.setMinimumSize(420, 380)
         self._build_ui()
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
-            QDialog { background: #1e1f22; color: #ffffff; font-size: 10pt; }
-            QTabWidget { background: transparent; }
-            QTabWidget::pane { border: 1px solid #3c4043; border-top-left-radius: 0px; border-top-right-radius: 0px; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; background: #232428; }
-            QTabBar::tab { background: #2b2d31; color: #c4c7c5; padding: 10px 18px; font-size: 10pt; font-weight: 500; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 4px; }
-            QTabBar::tab:selected { background: #232428; color: #ffffff; font-weight: bold; border-bottom: 3px solid #8ab4f8; }
-            QTabBar::tab:hover { background: #313338; color: #ffffff; }
-            QLabel { color: #c4c7c5; font-size: 10pt; }
-            QComboBox { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
-            QComboBox:focus { border: 1.5px solid #8ab4f8; }
-            QComboBox QAbstractItemView { background: #2b2d31; color: #ffffff; selection-background-color: #1a73e8; selection-color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 4px; }
-            QLineEdit { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
-            QLineEdit:focus { border: 1.5px solid #8ab4f8; }
-            QCheckBox { color: #ffffff; font-size: 10pt; spacing: 8px; }
-            QCheckBox::indicator { width: 20px; height: 20px; border: 1.5px solid #5f6368; border-radius: 4px; background: #2b2d31; }
-            QCheckBox::indicator:checked { background: #1a73e8; border: 1.5px solid #1a73e8; }
-            QPushButton { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 16px; font-size: 10pt; font-weight: 500; }
-            QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
-            QPushButton:pressed { background: #1e1f22; }
-            QSlider::groove:horizontal { background: #3c4043; height: 6px; border-radius: 3px; }
-            QSlider::sub-page:horizontal { background: #1a73e8; height: 6px; border-radius: 3px; }
-            QSlider::handle:horizontal { background: #8ab4f8; width: 20px; height: 20px; border-radius: 8px; margin: -5px 0; }
-            QSlider::handle:horizontal:hover { background: #a8c7fa; }
-            QProgressBar { border: 1px solid #4e525a; border-radius: 4px; text-align: center; color: #ffffff; background: #2b2d31; }
-            QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #34a853, stop:0.7 #fbbc04, stop:1 #ea4335); border-radius: 3px; }
+            QWidget { background: #1a1b1e; color: #e8eaed; font-family: 'Segoe UI', sans-serif; }
+            
+            /* Tab bar */
+            QTabWidget::pane { border: none; background: #1a1b1e; }
+            QTabBar { background: transparent; }
+            QTabBar::tab {
+                background: transparent; color: #9aa0a6; padding: 8px 16px;
+                border: none; border-bottom: 2px solid transparent; font-size: 11px;
+            }
+            QTabBar::tab:selected { color: #e8eaed; border-bottom: 2px solid #8ab4f8; }
+            QTabBar::tab:hover { color: #c4c7c5; }
+            
+            /* Form elements */
+            QLabel { color: #9aa0a6; font-size: 11px; background: transparent; border: none; }
+            QLineEdit {
+                background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043;
+                border-radius: 6px; padding: 6px 10px; font-size: 11px; selection-background-color: #264f78;
+            }
+            QLineEdit:focus { border-color: #8ab4f8; }
+            QComboBox {
+                background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043;
+                border-radius: 6px; padding: 6px 10px; font-size: 11px; min-height: 20px;
+            }
+            QComboBox:hover { border-color: #5f6368; }
+            QComboBox::drop-down { border: none; width: 24px; }
+            QComboBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #9aa0a6; margin-right: 8px; }
+            QComboBox QAbstractItemView { background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043; selection-background-color: #303134; }
+            
+            /* Checkbox */
+            QCheckBox { color: #e8eaed; spacing: 8px; font-size: 11px; background: transparent; border: none; }
+            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1.5px solid #5f6368; background: transparent; }
+            QCheckBox::indicator:checked { background: #8ab4f8; border-color: #8ab4f8; image: none; }
+            
+            /* Slider */
+            QSlider::groove:horizontal { background: #3c4043; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #8ab4f8; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }
+            QSlider::handle:horizontal:hover { background: #aecbfa; }
+            QSlider::sub-page:horizontal { background: #8ab4f8; border-radius: 2px; }
+            
+            /* Buttons */
+            QPushButton {
+                background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043;
+                border-radius: 6px; padding: 6px 16px; font-size: 11px; min-height: 20px;
+            }
+            QPushButton:hover { background: #383a40; border-color: #5f6368; }
+            QPushButton:pressed { background: #4e525a; }
             QPushButton:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
-            QComboBox:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
-            QLineEdit:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
-            QCheckBox:disabled { color: #5f6368; }
-            QMessageBox { background: #1e1f22; color: #ffffff; }
-            QMessageBox QLabel { color: #ffffff; }
-            QMessageBox QPushButton { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 16px; }
-            QMessageBox QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
+            
+            /* Primary button */
+            QPushButton#primaryBtn { background: #8ab4f8; color: #1a1b1e; border: none; font-weight: bold; }
+            QPushButton#primaryBtn:hover { background: #aecbfa; }
+            
+            /* Scrollbar */
+            QScrollBar:vertical { background: transparent; width: 8px; }
+            QScrollBar::handle:vertical { background: #3c4043; border-radius: 4px; min-height: 30px; }
+            QScrollBar::handle:vertical:hover { background: #5f6368; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            
+            /* Group box */
+            QGroupBox { border: 1px solid #2b2d31; border-radius: 8px; margin-top: 12px; padding-top: 16px; font-size: 11px; color: #9aa0a6; }
+            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
+            
+            /* QMessageBox */
+            QMessageBox { background: #1a1b1e; }
+            QMessageBox QLabel { color: #e8eaed; }
+            QMessageBox QPushButton { background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043; border-radius: 6px; padding: 6px 16px; }
+            QMessageBox QPushButton:hover { background: #383a40; }
         """)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 8, 12, 8)
         tabs = QTabWidget()
         tabs.addTab(self._general_tab(), "⚙️  General")
         tabs.addTab(self._hotkey_tab(), "⌨️  Hotkey")
@@ -198,20 +235,21 @@ class SettingsWindow(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setStyleSheet("""
             QPushButton {
-                background: transparent; border: 1px solid #5f6368; color: #ffffff;
-                border-radius: 6px; padding: 6px 18px; font-size: 13px;
+                background: transparent; border: 1px solid #3c4043; color: #e8eaed;
+                border-radius: 6px; padding: 6px 16px; font-size: 11px;
             }
-            QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
+            QPushButton:hover { background: #383a40; border-color: #5f6368; }
         """)
         cancel_btn.clicked.connect(self.close)
 
         save_btn = QPushButton("Save")
+        save_btn.setObjectName("primaryBtn")
         save_btn.setStyleSheet("""
             QPushButton {
-                background: #1a73e8; color: #ffffff; border: none;
-                border-radius: 6px; padding: 6px 20px; font-size: 13px; font-weight: bold;
+                background: #8ab4f8; color: #1a1b1e; border: none;
+                border-radius: 6px; padding: 6px 20px; font-size: 11px; font-weight: bold;
             }
-            QPushButton:hover { background: #1557b0; }
+            QPushButton:hover { background: #aecbfa; }
         """)
         save_btn.clicked.connect(self._save_and_close)
 
@@ -224,8 +262,9 @@ class SettingsWindow(QDialog):
     def _general_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        layout.setVerticalSpacing(12)
-        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(8)
+        layout.setHorizontalSpacing(12)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         self._mode_combo = QComboBox()
         self._mode_combo.addItem("Push-to-Talk (hold key to record)", "push_to_talk")
@@ -269,8 +308,9 @@ class SettingsWindow(QDialog):
     def _hotkey_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        layout.setVerticalSpacing(12)
-        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(8)
+        layout.setHorizontalSpacing(12)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         self._hotkey_combo = QComboBox()
         layout.addRow("Voice Typing Key / Button:", self._hotkey_combo)
@@ -285,7 +325,7 @@ class SettingsWindow(QDialog):
             "Supports Keyboard (F6-F12, CapsLock) & Mouse (Side Buttons, Middle Click)."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        hint.setStyleSheet("color: #8ab4f8; font-size: 10px;")
         layout.addRow("", hint)
 
         return w
@@ -293,8 +333,9 @@ class SettingsWindow(QDialog):
     def _speech_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        layout.setVerticalSpacing(12)
-        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(8)
+        layout.setHorizontalSpacing(12)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(["Auto (Thai + English)", "Thai (ภาษาไทย)", "English"])
@@ -356,8 +397,9 @@ class SettingsWindow(QDialog):
     def _gemini_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
-        layout.setVerticalSpacing(12)
-        layout.setHorizontalSpacing(16)
+        layout.setVerticalSpacing(8)
+        layout.setHorizontalSpacing(12)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -388,7 +430,7 @@ class SettingsWindow(QDialog):
         layout.addRow("Fast Mode:", self._fast_mode)
 
         hint = QLabel("Skip AI punctuation correction for faster real-time response.")
-        hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        hint.setStyleSheet("color: #8ab4f8; font-size: 10px;")
         hint.setWordWrap(True)
         layout.addRow("", hint)
 
@@ -400,7 +442,7 @@ class SettingsWindow(QDialog):
             'Add specific words, names, or jargon to help Gemini recognize them accurately.\n'
             '\u26a0 Note: Requires "Fast Mode" to be OFF to take effect.'
         )
-        vocab_hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
+        vocab_hint.setStyleSheet("color: #8ab4f8; font-size: 10px;")
         vocab_hint.setWordWrap(True)
         layout.addRow("", vocab_hint)
 
@@ -421,16 +463,16 @@ class SettingsWindow(QDialog):
         layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("VoiceType")
-        title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff; margin-top: 8px;")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e8eaed; margin-top: 8px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
 
         version = QLabel("v0.1.0")
-        version.setStyleSheet("color: #a8c7fa; font-size: 13px;")
+        version.setStyleSheet("color: #8ab4f8; font-size: 12px;")
         layout.addWidget(version, 0, Qt.AlignmentFlag.AlignCenter)
 
         desc = QLabel("Real-time Thai + English voice-to-text for Windows")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #c4c7c5; margin-top: 8px; font-size: 13px;")
+        desc.setStyleSheet("color: #9aa0a6; margin-top: 8px; font-size: 12px;")
         layout.addWidget(desc, 0, Qt.AlignmentFlag.AlignCenter)
 
         layout.addSpacing(16)
@@ -439,10 +481,10 @@ class SettingsWindow(QDialog):
         get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         get_key_btn.setStyleSheet("""
             QPushButton {
-                background: transparent; color: #8ab4f8; border: none; font-size: 13px; text-decoration: underline;
+                background: transparent; color: #8ab4f8; border: none; font-size: 12px; text-decoration: underline;
             }
             QPushButton:hover {
-                color: #a8c7fa;
+                color: #aecbfa;
             }
         """)
         get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://aistudio.google.com/apikey")))
@@ -458,9 +500,9 @@ class SettingsWindow(QDialog):
         reset_btn = QPushButton("⚠️  Reset All Settings to Defaults")
         reset_btn.setStyleSheet("""
             QPushButton {
-                background: #3d1a1a; color: #ea4335; border: 1px solid #ea4335; border-radius: 6px; padding: 6px 16px; font-size: 13px; font-weight: 500;
+                background: #2b1a1a; color: #ea4335; border: 1px solid #ea4335; border-radius: 6px; padding: 6px 16px; font-size: 11px; font-weight: 500;
             }
-            QPushButton:hover { background: #5c2020; }
+            QPushButton:hover { background: #3d1a1a; }
         """)
         reset_btn.clicked.connect(self._reset_to_defaults)
         layout.addWidget(reset_btn, 0, Qt.AlignmentFlag.AlignCenter)
