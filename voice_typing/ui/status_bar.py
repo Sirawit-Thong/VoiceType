@@ -271,8 +271,15 @@ class StatusBar:
         self._mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mic_button.setToolTip("Start / Stop recording")
         self._mic_button.setStyleSheet(
-            "QPushButton { background: transparent; color: #9aa0a6; border: none; border-radius: 12px; }"
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); color: #e8eaed; }"
+            """
+            QPushButton {
+                background: transparent; color: #9aa0a6; border: none;
+                border-radius: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.08); color: #e8eaed;
+            }
+            """
         )
         self._mic_button.clicked.connect(self._on_toggle)
 
@@ -294,9 +301,15 @@ class StatusBar:
         self._tray_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._tray_btn.setToolTip("Minimize to tray")
         self._tray_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #9aa0a6; border: none; "
-            "font-size: 14px; font-weight: bold; border-radius: 12px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.08); color: #e8eaed; }"
+            """
+            QPushButton {
+                background: transparent; color: #9aa0a6; border: none;
+                font-size: 14px; font-weight: bold; border-radius: 12px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.08); color: #e8eaed;
+            }
+            """
         )
         self._tray_btn.clicked.connect(self._minimize_to_tray)
 
@@ -305,10 +318,15 @@ class StatusBar:
         self._menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._menu_button.setToolTip("Menu")
         self._menu_button.setStyleSheet(
-            "QPushButton { background: transparent; color: #9aa0a6; border: none; "
-            "border-radius: 10px; font-size: 14px; font-weight: bold; padding-bottom: 2px; }"
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.08); "
-            "color: #e8eaed; }"
+            """
+            QPushButton {
+                background: transparent; color: #9aa0a6; border: none;
+                border-radius: 10px; font-size: 14px; font-weight: bold; padding-bottom: 2px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.08); color: #e8eaed;
+            }
+            """
         )
         self._menu_button.clicked.connect(self._show_menu)
 
@@ -540,7 +558,7 @@ class StatusBar:
             if state == "listening":
                 border_css = f"border: 1.5px solid {self._state_color};"
             else:
-                border_css = "border: 1.5px solid #3c4043;"
+                border_css = "border: 1px solid #3c4043;"
             self._capsule.setStyleSheet(
                 f"#capsule {{ background-color: rgba(26, 27, 30, 0.95); "
                 f"border-radius: 18px; {border_css} }}"

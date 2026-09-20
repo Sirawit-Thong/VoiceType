@@ -95,7 +95,11 @@ class TrayIcon:
         if self._menu is None:
             return
         self._menu.clear()
-        status_action = QAction(f"Status: {self._status_text}", self._menu)
+        if "Recording" in self._status_text:
+            dot_status = "● Recording"
+        else:
+            dot_status = f"● {self._status_text}"
+        status_action = QAction(dot_status, self._menu)
         status_action.setEnabled(False)
         self._menu.addAction(status_action)
         self._menu.addSeparator()
@@ -136,7 +140,7 @@ class TrayIcon:
         fast_action.triggered.connect(self._toggle_fast_mode)
         self._menu.addAction(fast_action)
 
-        history_menu = self._menu.addMenu("ล่าสุด (Recent)")
+        history_menu = self._menu.addMenu("Recent")
         if self._history:
             for full_text in reversed(self._history[-10:]):
                 if len(full_text) > 35:
@@ -150,7 +154,7 @@ class TrayIcon:
                 )
                 history_menu.addAction(item)
             history_menu.addSeparator()
-            clear_act = QAction("Clear History (ล้างประวัติ)", history_menu)
+            clear_act = QAction("Clear History", history_menu)
             clear_act.triggered.connect(self.signals.clear_history.emit)
             history_menu.addAction(clear_act)
         else:

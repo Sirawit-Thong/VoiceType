@@ -37,8 +37,8 @@ def _find_submenu(menu, partial_title):
 
 
 def _submenu_texts(tray):
-    submenu = _find_submenu(tray._menu, "ล่าสุด")
-    assert submenu is not None, "Recent (ล่าสุด) submenu not found"
+    submenu = _find_submenu(tray._menu, "Recent")
+    assert submenu is not None, "Recent submenu not found"
     return [action.text() for action in submenu.actions() if not action.isSeparator() and "Clear History" not in action.text()]
 
 
@@ -51,7 +51,7 @@ def test_set_history_builds_submenu(qapp):
 def test_empty_history(qapp):
     tray = _shown_tray(qapp)
     tray.set_history([])
-    submenu = _find_submenu(tray._menu, "ล่าสุด")
+    submenu = _find_submenu(tray._menu, "Recent")
     assert submenu is not None
     actions = submenu.actions()
     assert len(actions) == 1
@@ -62,7 +62,7 @@ def test_empty_history(qapp):
 def test_click_emits_re_inject(qapp):
     tray = _shown_tray(qapp)
     tray.set_history(["a", "b", "c"])
-    submenu = _find_submenu(tray._menu, "ล่าสุด")
+    submenu = _find_submenu(tray._menu, "Recent")
     action = next(a for a in submenu.actions() if a.text() == "a")
     received = []
     tray.signals.re_inject.connect(received.append)
@@ -73,7 +73,7 @@ def test_click_emits_re_inject(qapp):
 def test_clear_history_emitted(qapp):
     tray = _shown_tray(qapp)
     tray.set_history(["a", "b"])
-    submenu = _find_submenu(tray._menu, "ล่าสุด")
+    submenu = _find_submenu(tray._menu, "Recent")
     clear_act = next(a for a in submenu.actions() if "Clear History" in a.text())
     received = []
     tray.signals.clear_history.connect(lambda: received.append(True))
