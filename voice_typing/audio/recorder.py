@@ -1,10 +1,13 @@
 # voice_typing/audio/recorder.py
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 import sounddevice as sd
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 SAMPLE_RATE = 16000
@@ -33,9 +36,14 @@ class AudioRecorder:
         return self._is_recording
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
+        if status:
+            log.warning("Audio callback status: %s", status)
         if self._callback is not None:
-            pcm_bytes = indata.tobytes()
-            self._callback(pcm_bytes)
+            try:
+                pcm_bytes = indata.tobytes()
+                self._callback(pcm_bytes)
+            except Exception:
+                log.exception("Audio callback error")
 
     def start(
         self, callback: Callable[[bytes], None], device_id: int | None = None
@@ -53,13 +61,19 @@ class AudioRecorder:
         )
         self._stream.start()
         self._is_recording = True
+        log.debug("AudioRecorder started (device=%s)", device_id)
 
     def stop(self) -> None:
         if not self._is_recording:
             return
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
         self._is_recording = False
         self._callback = None
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                log.exception("Error closing audio stream")
+            finally:
+                self._stream = None
+        log.debug("AudioRecorder stopped")

@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
+import logging
 import math
+import random
 import sys
 import threading
 import time
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
+from voice_typing.errors import ErrorCategory
 from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
@@ -27,6 +30,8 @@ from voice_typing.ui.tray import TrayIcon
 from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
 from voice_typing.windows.startup import set_startup
 from voice_typing.windows.text_injector import TextInjector, auto_space
+
+log = logging.getLogger(__name__)
 
 DEFAULT_HOTKEY = 0x78  # VK_F9
 ERROR_ALREADY_EXISTS = 183
@@ -122,17 +127,25 @@ class WorkerThread(QThread):
     def _on_audio_sent(self, future) -> None:
         try:
             future.result()
-        except Exception:
-            pass
+            self._audio_send_failures = 0
+        except Exception as exc:
+            self._audio_send_failures = getattr(self, "_audio_send_failures", 0) + 1
+            log.warning("Audio send failed (%d consecutive): %s", self._audio_send_failures, exc)
+            if self._audio_send_failures >= 5:
+                self._signals.error.emit("Audio upload failing — check network connection")
+                self._audio_send_failures = 0
 
     def _on_hotkey(self, vk_code: int) -> None:
         mode = self._settings.get("mode", "push_to_talk")
         if mode == "push_to_talk":
             self._start_recording()
-        elif self._recording:
-            self._finalize_and_inject()
         else:
-            self._start_recording()
+            with self._lock:
+                should_finalize = self._recording
+            if should_finalize:
+                self._finalize_and_inject()
+            else:
+                self._start_recording()
 
     def _on_hotkey_release(self, vk_code: int) -> None:
         self._finalize_and_inject()
@@ -153,6 +166,7 @@ class WorkerThread(QThread):
     def update_settings(self) -> None:
         self.reconfigure_hotkey()
         self._silence_threshold = self._settings.get("silence_threshold", 0.005)
+        self._injector.typing_speed = self._settings.get("typing_speed", 0)
         api_key = self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
             self._processor = TextProcessor(
@@ -199,9 +213,11 @@ class WorkerThread(QThread):
                     device_id=self._settings.get("microphone_device_id"),
                 )
             except Exception:
+                log.exception("Failed to start microphone")
                 self._signals.error.emit("Failed to start microphone")
                 return
             self._recording = True
+        log.info("Recording started")
         self._signals.recording_started.emit()
 
     def _inject(self, text: str) -> None:
@@ -210,14 +226,18 @@ class WorkerThread(QThread):
         raw = text
         text = auto_space(self._last_injected, text)
         self._last_injected = text
-        if self._injector.inject(text):
-            self._append_history(raw)
-            if self._settings.get("copy_to_clipboard", False):
-                try:
-                    import pyperclip
-                    pyperclip.copy(raw)
-                except Exception:
-                    pass
+        if not self._injector.inject(text):
+            log.warning("Injection failed for: %r", raw[:80])
+            self._signals.error.emit("Text injection failed — check target application")
+            return
+        log.debug("Injected: %r", raw[:80])
+        self._append_history(raw)
+        if self._settings.get("copy_to_clipboard", False):
+            try:
+                import pyperclip
+                pyperclip.copy(raw)
+            except Exception:
+                pass
 
     def _re_inject(self, text: str) -> None:
         # Re-insert previously dictated text without touching history.
@@ -244,15 +264,22 @@ class WorkerThread(QThread):
         self._history.append(text)
         if len(self._history) > MAX_HISTORY:
             del self._history[:-MAX_HISTORY]
+        self._save_history()
+        self._signals.history_changed.emit(list(self._history))
+
+    def _save_history(self) -> None:
+        """Persist current history to disk."""
+        import os
         try:
             self._history_path.parent.mkdir(parents=True, exist_ok=True)
-            self._history_path.write_text(
+            tmp_path = self._history_path.with_suffix(".tmp")
+            tmp_path.write_text(
                 json.dumps(self._history, ensure_ascii=False),
                 encoding="utf-8",
             )
+            os.replace(tmp_path, self._history_path)
         except OSError:
             pass
-        self._signals.history_changed.emit(list(self._history))
 
     def _inject_processed(self, future: asyncio.Future, raw: str) -> None:
         try:
@@ -297,11 +324,9 @@ class WorkerThread(QThread):
             future = asyncio.run_coroutine_threadsafe(
                 self._processor.process(text), self._loop
             )
-            try:
-                text = future.result(timeout=4)
-            except Exception:
-                pass
-            self._inject(text)
+            future.add_done_callback(
+                lambda f: self._inject_processed(f, text)
+            )
 
     def _on_partial(self, text: str) -> None:
         self._buffer.add_partial(text)
@@ -404,12 +429,22 @@ class WorkerThread(QThread):
                     break
                 except Exception as exc:
                     last_error = str(exc)
+                    category = self._client.last_error_category
+                    reason = self._client.last_error_reason or str(exc)[:300]
+                    log.warning("Initial connect failed [%s]: %s", category, reason)
                     if self._loop is not None:
                         self._loop.close()
                         self._loop = None
                     self._client = None
                     if self._should_stop:
                         return
+                    # FATAL: bad API key / quota / model → don't retry
+                    if category == ErrorCategory.FATAL:
+                        self._signals.error.emit(
+                            f"Cannot connect: {reason} — check your API key and settings"
+                        )
+                        return
+                    # RETRY: transient → back off and try again
                     if self._sleep(3):
                         return
             if self._client is None or not self._client.is_connected:
@@ -423,6 +458,9 @@ class WorkerThread(QThread):
                     api_key=api_key,
                     vocabulary=self._settings.get("custom_vocabulary", ""),
                 )
+            last_error = ""
+            category = None
+            reason = ""
             while not self._should_stop:
                 loop = self._loop
                 if loop is None:
@@ -435,6 +473,9 @@ class WorkerThread(QThread):
                     )
                 except Exception as exc:
                     last_error = str(exc)
+                    category = self._client.last_error_category
+                    reason = self._client.last_error_reason or str(exc)[:300]
+                    log.warning("receive_transcript error [%s]: %s", category, reason)
                     if self._should_stop:
                         break
                     self._signals.status.emit("Connection lost - reconnecting...")
@@ -443,6 +484,12 @@ class WorkerThread(QThread):
                 if self._client.is_connected:
                     continue
                 self._stop_recording_on_connection_lost()
+                # Check if the error was fatal before attempting reconnect
+                if category == ErrorCategory.FATAL:
+                    self._signals.error.emit(
+                        f"Connection lost: {reason} — not reconnecting (check API key / quota)"
+                    )
+                    return
                 if loop is not None:
                     loop.close()
                     self._loop = None
@@ -467,6 +514,7 @@ class WorkerThread(QThread):
                 self._recording = False
                 stopped = True
         if stopped:
+            log.warning("Recording stopped due to connection loss")
             self._signals.recording_stopped.emit()
             text = self._buffer.finalize()
             if text.strip():
@@ -479,7 +527,13 @@ class WorkerThread(QThread):
         for attempt, delay in enumerate(delays, start=1):
             if self._should_stop:
                 return False
-            if self._sleep(delay):
+            # Add jitter: ±30% of base delay, floor at 0.1s
+            jittered = max(0.1, delay + random.uniform(-delay * 0.3, delay * 0.3))
+            log.info("Reconnect attempt %d/%d (waiting %.1fs)...", attempt, len(delays), jittered)
+            self._signals.status.emit(
+                f"Reconnecting... (attempt {attempt}/{len(delays)})"
+            )
+            if self._sleep(jittered):
                 return False
             loop = None
             try:
@@ -495,16 +549,30 @@ class WorkerThread(QThread):
                 )
             except Exception as exc:
                 last_error = str(exc)
+                category = client.last_error_category
+                reason = client.last_error_reason or str(exc)[:300]
+                log.warning(
+                    "Reconnect attempt %d/%d failed [%s]: %s",
+                    attempt, len(delays), category, reason,
+                )
                 if loop is not None:
                     loop.close()
+                # FATAL on any attempt → stop immediately
+                if category == ErrorCategory.FATAL:
+                    self._signals.error.emit(
+                        f"Cannot reconnect: {reason} — check your API key and settings"
+                    )
+                    return False
                 self._signals.status.emit(
                     f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
                 )
                 continue
             self._client = client
             self._loop = loop
+            log.info("Reconnected to Gemini Live ✓")
             self._signals.status.emit("Reconnected to Gemini Live")
             return True
+        log.error("All %d reconnect attempts exhausted", len(delays))
         return False
 
 
@@ -581,6 +649,7 @@ class VoiceTypeApp:
         self._status_bar.signals.open_settings.connect(self._open_settings)
         self._status_bar.signals.exit_app.connect(self._exit)
         self._status_bar.signals.language_changed.connect(self._on_language_changed)
+        self._status_bar.signals.test_microphone.connect(self._on_test_microphone)
         self._run_setup_wizard()
         self._tray.set_language(self._settings.get("language", "auto"))
         self._status_bar.set_language(self._settings.get("language", "auto"))
@@ -616,6 +685,19 @@ class VoiceTypeApp:
         if self._worker is not None and self._worker.isRunning():
             return
         if self._worker is not None and not self._worker.isRunning():
+            for sig in [
+                self._worker._signals.recording_started,
+                self._worker._signals.recording_stopped,
+                self._worker._signals.partial_received,
+                self._worker._signals.error,
+                self._worker._signals.status,
+                self._worker._signals.audio_level,
+                self._worker._signals.history_changed,
+            ]:
+                try:
+                    sig.disconnect()
+                except RuntimeError:
+                    pass
             self._worker = None
         self._worker = WorkerThread(self._settings)
         self._worker._signals.recording_started.connect(self._on_recording_started)
@@ -662,7 +744,7 @@ class VoiceTypeApp:
 
     def _on_status(self, msg: str) -> None:
         self._status_bar.set_state("ready", msg)
-        self._tray.set_status("Connecting...")
+        self._tray.set_status(msg)
 
     def _on_test_microphone(self) -> None:
         if self._mic_tester is not None and self._mic_tester.isRunning():
@@ -713,9 +795,8 @@ class VoiceTypeApp:
         if self._settings_win is None:
             self._settings_win = SettingsWindow(self._settings)
             self._settings_win.saved.connect(self._on_settings_saved)
-        self._settings_win.show()
-        self._settings_win.raise_()
-        self._settings_win.activateWindow()
+        self._settings_win.exec()
+        self._settings_win = None
 
     def _on_settings_saved(self) -> None:
         self._status_bar.set_hotkey_name(
@@ -755,7 +836,7 @@ class VoiceTypeApp:
                 "No API key entered. You can configure it later in Settings.",
             )
 
-    def _exit(self, force_exit: bool = True) -> None:
+    def _exit(self) -> None:
         try:
             if self._worker is not None and self._worker.isRunning():
                 self._worker.stop()
@@ -772,12 +853,12 @@ class VoiceTypeApp:
         finally:
             _release_single_instance()
             self._qapp.quit()
-            if force_exit:
-                import os
-                os._exit(0)
 
 
 def main() -> int:
+    from voice_typing.config.logging_setup import setup_logging
+    log_file = setup_logging()
+    log.info("VoiceType starting (log: %s)", log_file)
     if not _acquire_single_instance():
         app = QApplication(sys.argv)
         QMessageBox.warning(
@@ -792,8 +873,7 @@ def main() -> int:
         exit_code = app.run()
     finally:
         _release_single_instance()
-    import os
-    os._exit(exit_code or 0)
+    return exit_code
 
 
 if __name__ == "__main__":

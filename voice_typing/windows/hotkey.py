@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Callable
 
+log = logging.getLogger(__name__)
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
@@ -192,7 +194,7 @@ class HotkeyManager:
                             try:
                                 cb(vk)
                             except Exception:
-                                logging.warning(
+                                log.warning(
                                     "Mouse hotkey callback failed VK=0x%X", vk, exc_info=True
                                 )
                     elif not is_down and was_down:
@@ -202,7 +204,7 @@ class HotkeyManager:
                             try:
                                 release_cb(vk)
                             except Exception:
-                                logging.warning(
+                                log.warning(
                                     "Mouse release callback failed VK=0x%X", vk, exc_info=True
                                 )
             time.sleep(0.015)
@@ -215,7 +217,9 @@ class HotkeyManager:
             if vk not in MOUSE_VKS:
                 if user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
                     self._registration_failures.append(vk)
-                    logging.warning("Failed to register hotkey VK=0x%X", vk)
+                    log.warning("Failed to register hotkey VK=0x%X", vk)
+                else:
+                    log.debug("Registered hotkey VK=0x%X", vk)
         msg = wintypes.MSG()
         while self._running:
             result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
@@ -228,7 +232,7 @@ class HotkeyManager:
                     try:
                         cb(vk)
                     except Exception:
-                        logging.warning(
+                        log.warning(
                             "Hotkey callback failed VK=0x%X", vk, exc_info=True
                         )
                     release_cb = self._release_callbacks.get(vk)
@@ -247,14 +251,16 @@ class HotkeyManager:
                 if vk not in MOUSE_VKS:
                     if user32.RegisterHotKey(None, vk, MOD_NONE, vk) == 0:
                         self._registration_failures.append(vk)
-                        logging.warning("Failed to register hotkey VK=0x%X", vk)
+                        log.warning("Failed to register hotkey VK=0x%X", vk)
                     else:
+                        log.debug("Dynamically registered hotkey VK=0x%X", vk)
                         if vk in self._registration_failures:
                             self._registration_failures.remove(vk)
             elif msg.message == WM_UNREGISTER:
                 vk = msg.wParam & 0xFFFFFFFF
                 if vk not in MOUSE_VKS:
                     user32.UnregisterHotKey(None, vk)
+                    log.debug("Unregistered hotkey VK=0x%X", vk)
                     if vk in self._registration_failures:
                         self._registration_failures.remove(vk)
         for vk in list(self._hotkeys.keys()):
@@ -271,7 +277,7 @@ class HotkeyManager:
                 try:
                     on_release(vk)
                 except Exception:
-                    logging.warning(
+                    log.warning(
                         "Hotkey release callback failed VK=0x%X", vk, exc_info=True
                     )
         finally:

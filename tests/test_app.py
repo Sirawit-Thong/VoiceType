@@ -518,7 +518,7 @@ def test_app_exit_clean_shutdown():
     app._tray = MagicMock()
     app._qapp = MagicMock()
 
-    app._exit(force_exit=False)
+    app._exit()
 
     app._worker.stop.assert_called_once()
     app._worker.wait.assert_called_once_with(500)
@@ -545,3 +545,214 @@ def test_app_opacity_propagated_on_settings_saved():
         app._on_settings_saved()
 
     app._status_bar.set_opacity.assert_called_with(0.75)
+
+
+# ── Reconnect logic tests ────────────────────────────────────────────
+
+def test_save_history_method_exists():
+    """WorkerThread must have a _save_history method (was missing → AttributeError)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import json
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._inject("hello")
+        # Should not raise AttributeError
+        worker._save_history()
+        history_file = Path(tmp) / "history.json"
+        assert history_file.exists()
+        assert json.loads(history_file.read_text(encoding="utf-8")) == ["hello"]
+
+
+def test_clear_history_persists_empty_list():
+    """Clearing history should persist empty list to disk."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import json
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        worker = WorkerThread(mgr)
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._inject("hello")
+        worker._inject("world")
+        assert len(worker._history) == 2
+
+        # Simulate _on_clear_history logic
+        worker._history.clear()
+        worker._save_history()
+
+        history_file = Path(tmp) / "history.json"
+        assert json.loads(history_file.read_text(encoding="utf-8")) == []
+
+
+def test_reconnect_all_attempts_fail_returns_false():
+    """_reconnect should return False when all attempts fail with RETRY errors."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+
+        # Make connect always fail with RETRY error
+        mock_client = MagicMock()
+        mock_client.last_error_category = ErrorCategory.RETRY
+        mock_client.last_error_reason = "Network error"
+        mock_client.connect = MagicMock(side_effect=Exception("connection reset"))
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client):
+            with patch.object(worker, "_sleep", return_value=False):
+                result = worker._reconnect()
+
+        assert result is False
+
+
+def test_reconnect_second_attempt_succeeds():
+    """_reconnect should return True when second attempt succeeds."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch, AsyncMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+
+        call_count = 0
+        def connect_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("connection reset")
+            # Second call succeeds (no exception)
+
+        mock_client = MagicMock()
+        mock_client.connect = MagicMock(side_effect=connect_side_effect)
+        mock_client.last_error_category = None
+        mock_client.last_error_reason = ""
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client):
+            with patch.object(worker, "_sleep", return_value=False):
+                loop = MagicMock()
+                with patch("voice_typing.app.asyncio") as mock_asyncio:
+                    mock_asyncio.new_event_loop.return_value = loop
+                    mock_asyncio.set_event_loop = MagicMock()
+                    result = worker._reconnect()
+
+        assert result is True
+
+
+def test_reconnect_fatal_error_stops_immediately():
+    """_reconnect should return False on first FATAL error without further retries."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+
+        mock_client = MagicMock()
+        mock_client.last_error_category = ErrorCategory.FATAL
+        mock_client.last_error_reason = "API key is invalid"
+        mock_client.connect = MagicMock(side_effect=Exception("401 Unauthorized"))
+
+        sleep_calls = []
+        def track_sleep(s):
+            sleep_calls.append(s)
+            return False
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client):
+            with patch.object(worker, "_sleep", side_effect=track_sleep):
+                result = worker._reconnect()
+
+        assert result is False
+        # Should not have waited for subsequent retries
+        assert len(sleep_calls) == 1  # Only one sleep before FATAL abort
+
+
+def test_reconnect_should_stop_returns_false():
+    """_reconnect should return False immediately when _should_stop is True."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = True  # Signal to stop
+
+        result = worker._reconnect()
+        assert result is False
+
+
+def test_run_fatal_on_initial_connect():
+    """WorkerThread.run() should emit error and return on FATAL connect failure."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "bad-key")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+
+        mock_client = MagicMock()
+        mock_client.last_error_category = ErrorCategory.FATAL
+        mock_client.last_error_reason = "API key is invalid"
+        mock_client.is_connected = False
+        mock_client.connect = MagicMock(side_effect=Exception("401 Unauthorized"))
+
+        error_messages = []
+        worker._signals.error.connect(lambda msg: error_messages.append(msg))
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client):
+            worker.run()
+
+        assert any("API key" in msg or "Cannot connect" in msg for msg in error_messages)

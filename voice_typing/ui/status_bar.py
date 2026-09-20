@@ -311,7 +311,7 @@ class StatusBar:
     def _show_menu(self) -> None:
         if self._menu_button is None:
             return
-        menu = QMenu()
+        menu = QMenu(self._window)
         menu.setStyleSheet(
             "QMenu { background-color: #202124; color: #e8eaed; "
             "border: 1px solid #3c4043; border-radius: 8px; padding: 6px; }"
@@ -325,11 +325,8 @@ class StatusBar:
         menu.addAction(settings_action)
 
         lang_menu = menu.addMenu("🌐 Language")
-        for code, label in [
-            ("auto", "Auto (Thai + English)"),
-            ("thai", "Thai (ภาษาไทย)"),
-            ("english", "English"),
-        ]:
+        from voice_typing.config.settings import SUPPORTED_LANGUAGES
+        for code, label in SUPPORTED_LANGUAGES:
             action = QAction(label, lang_menu)
             action.setCheckable(True)
             action.setChecked(self._language == code)
@@ -527,7 +524,7 @@ class StatusBar:
             if state == "ready" and not text:
                 self._update_hint()
             elif text:
-                shown = text if len(text) <= 16 else text[:14] + ".."
+                shown = text if len(text) <= 60 else text[:57] + "..."
                 self._status_label.setText(shown)
             else:
                 self._status_label.setText(title)

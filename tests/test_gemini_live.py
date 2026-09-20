@@ -56,6 +56,7 @@ async def test_receive_dispatches_partial_and_final():
     partial = MagicMock()
     final = MagicMock()
     ws.recv = AsyncMock(side_effect=[
+        json.dumps({}),  # setup ack
         json.dumps({"serverContent": {"inputTranscription": {"text": "hello"}, "turnComplete": False}}),
         json.dumps({"serverContent": {"modelTurn": {"parts": []}}}),
         json.dumps({"serverContent": {"inputTranscription": {"text": "hello world"}, "turnComplete": True}}),
@@ -76,6 +77,7 @@ async def test_receive_ignores_redundant_model_turn_and_turn_complete():
     partial = MagicMock()
     final = MagicMock()
     ws.recv = AsyncMock(side_effect=[
+        json.dumps({}),  # setup ack
         json.dumps({"serverContent": {"inputTranscription": {"text": "hello"}, "turnComplete": False}}),
         json.dumps({"serverContent": {"modelTurn": {"parts": []}}}),
         json.dumps({"serverContent": {"modelTurn": {"parts": []}}}),  # Redundant modelTurn
@@ -99,6 +101,7 @@ async def test_receive_handles_turn_complete_with_text():
     partial = MagicMock()
     final = MagicMock()
     ws.recv = AsyncMock(side_effect=[
+        json.dumps({}),  # setup ack
         json.dumps({"serverContent": {"inputTranscription": {"text": "direct final text"}, "turnComplete": True}}),
     ])
     with patch("voice_typing.speech.gemini_live.websockets.connect", new=AsyncMock(return_value=ws)):

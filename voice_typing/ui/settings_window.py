@@ -1,7 +1,10 @@
 # voice_typing/ui/settings_window.py
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, QTimer, QUrl
 from PySide6.QtGui import QCursor, QDesktopServices, QIcon, QPixmap
@@ -74,6 +77,7 @@ class _ApiKeyTester(QThread):
 
 class _LiveMicTester(QThread):
     level_changed = Signal(int)
+    finished_test = Signal(bool, str)
 
     def __init__(self, device_id: int | None = None, duration_sec: float = 5.0) -> None:
         super().__init__()
@@ -116,8 +120,9 @@ class _LiveMicTester(QThread):
                 start_time = time.time()
                 while self._running and (time.time() - start_time < self._duration_sec):
                     time.sleep(0.05)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Mic test failed: %s", exc)
+            self.finished_test.emit(False, f"Mic test failed: {exc}")
         finally:
             self._running = False
 
@@ -383,7 +388,10 @@ class SettingsWindow(QDialog):
         self._custom_vocab.setPlaceholderText("e.g., Python, PySide6, Gemini, Prompt engineering")
         layout.addRow("Custom Vocabulary / Keywords:", self._custom_vocab)
 
-        vocab_hint = QLabel("Add specific words, names, or jargon to help Gemini recognize them accurately.")
+        vocab_hint = QLabel(
+            'Add specific words, names, or jargon to help Gemini recognize them accurately.\n'
+            '\u26a0 Note: Requires "Fast Mode" to be OFF to take effect.'
+        )
         vocab_hint.setStyleSheet("color: #a8c7fa; font-size: 12px;")
         vocab_hint.setWordWrap(True)
         layout.addRow("", vocab_hint)
@@ -408,7 +416,7 @@ class SettingsWindow(QDialog):
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff; margin-top: 8px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
 
-        version = QLabel("v1.0.0")
+        version = QLabel("v0.1.0")
         version.setStyleSheet("color: #a8c7fa; font-size: 13px;")
         layout.addWidget(version, 0, Qt.AlignmentFlag.AlignCenter)
 
@@ -474,6 +482,7 @@ class SettingsWindow(QDialog):
         self._mic_tester = _LiveMicTester(device_id=device_id)
         self._mic_tester.level_changed.connect(self._mic_level_bar.setValue)
         self._mic_tester.finished.connect(self._on_mic_test_finished)
+        self._mic_tester.finished_test.connect(self._on_mic_test_finished)
         self._mic_tester.start()
 
     def _stop_mic_test(self) -> None:
@@ -482,12 +491,16 @@ class SettingsWindow(QDialog):
             self._mic_tester.wait(500)
         self._on_mic_test_finished()
 
-    def _on_mic_test_finished(self) -> None:
+    def _on_mic_test_finished(self, success: bool = True, msg: str = "") -> None:
         self._test_mic_btn.setText("🎤 Test Mic")
         self._mic_level_bar.setValue(0)
+        if not success and msg:
+            QMessageBox.warning(self, "Mic Test Error", msg)
         self._mic_tester = None
 
     def closeEvent(self, event) -> None:
+        if self._capturing_key:
+            self._cancel_key_capture()
         if self._mic_tester is not None and self._mic_tester.isRunning():
             self._mic_tester.stop()
             self._mic_tester.wait(300)
@@ -525,7 +538,8 @@ class SettingsWindow(QDialog):
 
         # Speech
         current_lang = self._settings.get("language", "auto")
-        idx = {"auto": 0, "thai": 1, "english": 2}.get(current_lang, 0)
+        from voice_typing.config.settings import LANGUAGE_INDEX
+        idx = LANGUAGE_INDEX.get(current_lang, 0)
         self._lang_combo.setCurrentIndex(idx)
 
         self._refresh_mics()

@@ -37,9 +37,12 @@ async def test_url_normalization_with_models_prefix():
         call_url = mock_post.call_args[0][0]
         assert "models/gemini-2.0-flash:generateContent" in call_url
         assert "models/models/" not in call_url
-        assert call_url.startswith(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=test-key"
-        )
+        assert call_url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        # Verify API key is sent via x-goog-api-key header, not query parameter
+        call_kwargs = mock_post.call_args[1] if mock_post.call_args[1] else {}
+        call_headers = call_kwargs.get("headers", {})
+        assert call_headers.get("x-goog-api-key") == "test-key"
+        assert "key=" not in call_url
 
 
 @pytest.mark.asyncio

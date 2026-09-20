@@ -38,6 +38,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "custom_vocabulary": "",
 }
 
+SUPPORTED_LANGUAGES: list[tuple[str, str]] = [
+    ("auto", "Auto (Thai + English)"),
+    ("thai", "Thai (ภาษาไทย)"),
+    ("english", "English"),
+]
+LANGUAGE_INDEX = {code: i for i, (code, _) in enumerate(SUPPORTED_LANGUAGES)}
+
 
 class SettingsManager:
     def __init__(self, config_path: Path | str) -> None:
@@ -57,11 +64,14 @@ class SettingsManager:
             self.save()
 
     def save(self) -> None:
+        import os
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
+        tmp_path = self._path.with_suffix(".tmp")
+        tmp_path.write_text(
             json.dumps(self._data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        os.replace(tmp_path, self._path)
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)

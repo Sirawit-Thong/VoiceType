@@ -128,7 +128,8 @@ class TrayIcon:
         mode_menu.addAction(toggle_action)
 
         lang_menu = self._menu.addMenu("Language (ภาษา)")
-        for code, label in [("auto", "Auto (Thai + English)"), ("thai", "Thai (ไทย)"), ("english", "English")]:
+        from voice_typing.config.settings import SUPPORTED_LANGUAGES
+        for code, label in SUPPORTED_LANGUAGES:
             act = QAction(label, lang_menu)
             act.setCheckable(True)
             act.setChecked(self._language == code)
@@ -170,7 +171,7 @@ class TrayIcon:
 
         test_action = QAction("Test Microphone", self._menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)
-        menu_items = self._menu.addAction(test_action)
+        self._menu.addAction(test_action)
 
         self._menu.addSeparator()
         exit_action = QAction("Exit", self._menu)

@@ -1,9 +1,12 @@
 # voice_typing/windows/startup.py
 from __future__ import annotations
 
+import logging
 import sys
 import winreg
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "VoiceType"
@@ -23,13 +26,16 @@ def set_startup(enabled: bool) -> bool:
         ) as key:
             if enabled:
                 winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _command())
+                log.info("Windows startup enabled")
             else:
                 try:
                     winreg.DeleteValue(key, APP_NAME)
+                    log.info("Windows startup disabled")
                 except FileNotFoundError:
                     pass
         return True
     except OSError:
+        log.warning("Failed to set Windows startup registry")
         return False
 
 

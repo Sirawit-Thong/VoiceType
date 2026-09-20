@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import threading
 import time
 
 import pyperclip
+
+log = logging.getLogger(__name__)
 
 user32 = ctypes.windll.user32
 
@@ -107,9 +110,12 @@ class TextInjector:
 
     def inject(self, text: str, typing_speed: float | None = None) -> bool:
         if self._clipboard_inject(text):
+            log.debug("Injected via clipboard: %r", text[:60])
             return True
         if self._sendinput_inject(text, typing_speed=typing_speed):
+            log.debug("Injected via SendInput: %r", text[:60])
             return True
+        log.warning("All injection methods failed for: %r", text[:60])
         return False
 
     def _restore_clipboard_async(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -11,6 +12,10 @@ from urllib.parse import quote
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+
+from voice_typing.errors import ErrorCategory, classify_ws_error
+
+log = logging.getLogger(__name__)
 
 LIVE_API_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -30,7 +35,11 @@ def fetch_live_models(api_key: str) -> list[str]:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:300]
+        log.error("fetch_live_models HTTP %d: %s", exc.code, body)
         raise RuntimeError(f"API error {exc.code}: {body}") from exc
+    except Exception as exc:
+        log.error("fetch_live_models failed: %s", exc)
+        raise
     models = data.get("models", [])
     live = sorted(
         m["name"]
@@ -38,7 +47,9 @@ def fetch_live_models(api_key: str) -> list[str]:
         if "name" in m and "bidiGenerateContent" in m.get("supportedGenerationMethods", [])
     )
     if live:
+        log.info("Fetched %d live-capable models", len(live))
         return live
+    log.warning("No bidi-capable models found, returning all %d models", len(models))
     return sorted(m["name"] for m in models if "name" in m)
 
 
@@ -49,14 +60,35 @@ class GeminiLiveClient:
         self._ws: ClientConnection | None = None
         self._connected = False
         self._has_unfinalized = False
+        self._last_error_category: ErrorCategory | None = None
+        self._last_error_reason: str = ""
 
     @property
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def last_error_category(self) -> ErrorCategory | None:
+        return self._last_error_category
+
+    @property
+    def last_error_reason(self) -> str:
+        return self._last_error_reason
+
     async def connect(self, language: str = "auto") -> None:
-        url = f"{LIVE_API_URL}?key={self._api_key}"
-        self._ws = await websockets.connect(url)
+        url = LIVE_API_URL
+        log.info("Connecting to Gemini Live (model=%s, lang=%s) ...", self._model, language)
+        try:
+            self._ws = await websockets.connect(
+                url,
+                additional_headers={"x-goog-api-key": self._api_key},
+            )
+        except Exception as exc:
+            category, reason = classify_ws_error(exc)
+            self._last_error_category = category
+            self._last_error_reason = reason
+            log.error("Connect failed [%s]: %s — %s", category.value, reason, exc)
+            raise
         model_name = (
             self._model
             if self._model.startswith("models/")
@@ -78,8 +110,20 @@ class GeminiLiveClient:
             }
         }
         await self._ws.send(json.dumps(setup_msg))
+        # Wait briefly for server setup acknowledgment
+        try:
+            ack_raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+            ack = json.loads(ack_raw)
+            # Server may send setupComplete or an error
+            if "error" in ack:
+                raise ConnectionError(f"Server rejected setup: {ack['error']}")
+        except asyncio.TimeoutError:
+            log.warning("No setup acknowledgment received within 5s — proceeding anyway")
+        except json.JSONDecodeError:
+            log.warning("Non-JSON setup response — proceeding anyway")
         self._connected = True
         self._has_unfinalized = False
+        log.info("Connected to Gemini Live ✓")
 
     async def send_audio(self, audio_bytes: bytes) -> None:
         if self._ws is None:
@@ -123,12 +167,17 @@ class GeminiLiveClient:
                         on_final("")
         except asyncio.TimeoutError:
             pass
-        except Exception:
+        except Exception as exc:
+            category, reason = classify_ws_error(exc)
+            self._last_error_category = category
+            self._last_error_reason = reason
             self._connected = False
+            log.error("receive_transcript error [%s]: %s — %s", category.value, reason, exc)
             raise
 
     async def disconnect(self) -> None:
         if self._ws is not None:
+            log.info("Disconnecting from Gemini Live")
             try:
                 await self._ws.close()
             except Exception:
@@ -143,6 +192,7 @@ class GeminiLiveClient:
         ws = self._ws
         self._ws = None
         if ws is not None:
+            log.debug("Aborting WebSocket connection")
             try:
                 if hasattr(ws, "protocol") and hasattr(ws.protocol, "transport") and ws.protocol.transport is not None:
                     ws.protocol.transport.close()
