@@ -27,6 +27,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from voice_typing.config.settings import get_asset_path
+from voice_typing.ui._theme import MENU_STYLESHEET
 
 
 class StatusBarSignals(QObject):
@@ -253,6 +255,11 @@ class StatusBar:
             "#capsule { background-color: rgba(20, 21, 24, 0.94); "
             "border-radius: 18px; border: 1px solid rgba(255, 255, 255, 0.12); }"
         )
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        capsule.setGraphicsEffect(shadow)
         capsule.drag_finished.connect(self._on_drag_finished)
         capsule.hover_changed.connect(self._on_hover_changed)
 
@@ -278,7 +285,7 @@ class StatusBar:
 
         self._status_label = QLabel("")
         self._status_label.setMaximumWidth(100)
-        self._status_label.setStyleSheet("color: #e8eaed; font-size: 12px; font-weight: 500;")
+        self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px; font-weight: 500;")
 
         self._menu_button = QPushButton("⋯")
         self._menu_button.setFixedSize(20, 20)
@@ -312,14 +319,7 @@ class StatusBar:
         if self._menu_button is None:
             return
         menu = QMenu(self._window)
-        menu.setStyleSheet(
-            "QMenu { background-color: #202124; color: #e8eaed; "
-            "border: 1px solid #3c4043; border-radius: 8px; padding: 6px; }"
-            "QMenu::item { padding: 6px 18px; border-radius: 6px; }"
-            "QMenu::item:selected { background-color: #303134; }"
-            "QMenu::separator { height: 1px; background-color: #3c4043; "
-            "margin: 4px 8px; }"
-        )
+        menu.setStyleSheet(MENU_STYLESHEET)
         settings_action = QAction("Settings", menu)
         settings_action.triggered.connect(self.signals.open_settings.emit)
         menu.addAction(settings_action)
@@ -515,6 +515,15 @@ class StatusBar:
         }
         color = colors.get(state, "#9aa0a6")
         self._state_color = color
+        if self._capsule is not None:
+            if state == "listening":
+                border_css = f"border: 1.5px solid {self._state_color};"
+            else:
+                border_css = "border: 1.5px solid rgba(255, 255, 255, 0.12);"
+            self._capsule.setStyleSheet(
+                f"#capsule {{ background-color: rgba(20, 21, 24, 0.94); "
+                f"border-radius: 18px; {border_css} }}"
+            )
         title = titles.get(state, state.title())
         if self._mic_button is not None:
             self._mic_button.setIcon(QIcon(self._make_mic_pixmap(color)))

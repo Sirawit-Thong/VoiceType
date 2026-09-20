@@ -655,8 +655,8 @@ class VoiceTypeApp:
         self._status_bar.set_language(self._settings.get("language", "auto"))
         self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         self._tray.show()
-        if self._settings.get("show_status_bar", True):
-            self._status_bar.show()
+        # Don't show status bar on startup — only tray icon visible
+        # Status bar will appear when needed (recording, error, or user clicks tray)
         set_startup(self._settings.get("start_with_windows", False))
         self._status_bar.set_hotkey_name(
             hotkey_name(self._settings.get("hotkey", DEFAULT_HOTKEY))

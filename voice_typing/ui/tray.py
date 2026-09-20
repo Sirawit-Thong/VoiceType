@@ -15,6 +15,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from voice_typing.config.settings import get_asset_path
+from voice_typing.ui._theme import MENU_STYLESHEET
 
 
 class TraySignals(QObject):
@@ -84,14 +85,7 @@ class TrayIcon:
         self._tray.setIcon(self._make_icon())
         self._tray.setToolTip("VoiceType - Ready")
         self._menu = QMenu()
-        self._menu.setStyleSheet(
-            "QMenu { background-color: #202124; color: #e8eaed; "
-            "border: 1px solid #3c4043; border-radius: 8px; padding: 6px; }"
-            "QMenu::item { padding: 6px 18px; border-radius: 6px; }"
-            "QMenu::item:selected { background-color: #303134; }"
-            "QMenu::separator { height: 1px; background-color: #3c4043; "
-            "margin: 4px 8px; }"
-        )
+        self._menu.setStyleSheet(MENU_STYLESHEET)
         self._build_menu()
         self._tray.setContextMenu(self._menu)
         self._tray.activated.connect(self._on_activated)

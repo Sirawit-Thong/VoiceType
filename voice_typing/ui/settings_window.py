@@ -151,28 +151,36 @@ class SettingsWindow(QDialog):
         self.setStyleSheet("""
             QDialog { background: #1e1f22; color: #ffffff; font-size: 10pt; }
             QTabWidget { background: transparent; }
-            QTabWidget::pane { border: 1px solid #3c4043; border-radius: 8px; background: #232428; }
+            QTabWidget::pane { border: 1px solid #3c4043; border-top-left-radius: 0px; border-top-right-radius: 0px; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; background: #232428; }
             QTabBar::tab { background: #2b2d31; color: #c4c7c5; padding: 10px 18px; font-size: 10pt; font-weight: 500; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 4px; }
             QTabBar::tab:selected { background: #232428; color: #ffffff; font-weight: bold; border-bottom: 3px solid #8ab4f8; }
             QTabBar::tab:hover { background: #313338; color: #ffffff; }
-            QLabel { color: #ffffff; font-size: 10pt; }
+            QLabel { color: #c4c7c5; font-size: 10pt; }
             QComboBox { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
             QComboBox:focus { border: 1.5px solid #8ab4f8; }
             QComboBox QAbstractItemView { background: #2b2d31; color: #ffffff; selection-background-color: #1a73e8; selection-color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 4px; }
             QLineEdit { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 10px; font-size: 10pt; }
             QLineEdit:focus { border: 1.5px solid #8ab4f8; }
             QCheckBox { color: #ffffff; font-size: 10pt; spacing: 8px; }
-            QCheckBox::indicator { width: 18px; height: 18px; border: 1.5px solid #5f6368; border-radius: 4px; background: #2b2d31; }
+            QCheckBox::indicator { width: 20px; height: 20px; border: 1.5px solid #5f6368; border-radius: 4px; background: #2b2d31; }
             QCheckBox::indicator:checked { background: #1a73e8; border: 1.5px solid #1a73e8; }
             QPushButton { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 16px; font-size: 10pt; font-weight: 500; }
             QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
             QPushButton:pressed { background: #1e1f22; }
             QSlider::groove:horizontal { background: #3c4043; height: 6px; border-radius: 3px; }
             QSlider::sub-page:horizontal { background: #1a73e8; height: 6px; border-radius: 3px; }
-            QSlider::handle:horizontal { background: #8ab4f8; width: 16px; height: 16px; border-radius: 8px; margin: -5px 0; }
+            QSlider::handle:horizontal { background: #8ab4f8; width: 20px; height: 20px; border-radius: 8px; margin: -5px 0; }
             QSlider::handle:horizontal:hover { background: #a8c7fa; }
             QProgressBar { border: 1px solid #4e525a; border-radius: 4px; text-align: center; color: #ffffff; background: #2b2d31; }
             QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #34a853, stop:0.7 #fbbc04, stop:1 #ea4335); border-radius: 3px; }
+            QPushButton:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
+            QComboBox:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
+            QLineEdit:disabled { background: #2b2d31; color: #5f6368; border: 1px solid #3c4043; }
+            QCheckBox:disabled { color: #5f6368; }
+            QMessageBox { background: #1e1f22; color: #ffffff; }
+            QMessageBox QLabel { color: #ffffff; }
+            QMessageBox QPushButton { background: #2b2d31; color: #ffffff; border: 1px solid #4e525a; border-radius: 6px; padding: 6px 16px; }
+            QMessageBox QPushButton:hover { background: #383a40; border-color: #8ab4f8; }
         """)
 
         layout = QVBoxLayout(self)
