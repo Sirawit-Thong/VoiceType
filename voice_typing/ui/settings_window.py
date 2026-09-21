@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from voice_typing.audio.recorder import list_input_devices
-from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, get_asset_path
+from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, VERSION, RELEASE_URL, get_asset_path
 from voice_typing.speech.gemini_live import MODEL, fetch_live_models
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
@@ -445,8 +445,9 @@ class SettingsWindow(QDialog):
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e8eaed; margin-top: 8px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
 
-        version = QLabel("v0.1.0")
-        version.setStyleSheet("color: #8ab4f8; font-size: 12px;")
+        version = QLabel(f'<a href="{RELEASE_URL}" style="color: #8ab4f8; font-size: 12px; text-decoration: none;">v{VERSION}</a>')
+        version.setOpenExternalLinks(True)
+        version.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(version, 0, Qt.AlignmentFlag.AlignCenter)
 
         desc = QLabel("Real-time Thai + English voice-to-text for Windows")

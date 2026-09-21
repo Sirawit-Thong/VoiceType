@@ -3,6 +3,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+VERSION = "0.1.2"
+RELEASE_URL = "https://github.com/Sirawit-Thong/VoiceType/releases/tag/v0.1.2"
+
 
 def get_asset_path(filename: str = "icon.png") -> Path:
     """Resolve asset path reliably in normal python execution and PyInstaller bundled .exe."""
