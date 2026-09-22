@@ -39,6 +39,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "opacity": 0.94,
     "silence_threshold": 0.005,
     "custom_vocabulary": "",
+    # Transcript overlay settings
+    "overlay_enabled": True,
+    "overlay_opacity": 0.92,
+    "overlay_font_size": 13,
+    "overlay_max_height": 300,
+    "overlay_auto_dismiss_seconds": 3,
 }
 
 SUPPORTED_LANGUAGES: list[tuple[str, str]] = [

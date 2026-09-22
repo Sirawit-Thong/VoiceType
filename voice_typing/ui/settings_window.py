@@ -226,6 +226,13 @@ class SettingsWindow(QDialog):
 
         self._populate_ui_from_settings()
 
+    @staticmethod
+    def _make_separator() -> QFrame:
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #3c4043;")
+        return sep
+
     def _general_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
@@ -269,6 +276,49 @@ class SettingsWindow(QDialog):
 
         self._copy_to_clipboard = QCheckBox("Also copy recognized text to clipboard")
         layout.addRow("Clipboard:", self._copy_to_clipboard)
+
+        # -- Transcript Overlay section ------------------------------------------
+        layout.addRow("", self._make_separator())
+        overlay_title = QLabel("Transcript Overlay")
+        overlay_title.setStyleSheet(
+            "color: #e8eaed; font-size: 12px; font-weight: 600; "
+            "background: transparent; border: none;"
+        )
+        layout.addRow("", overlay_title)
+
+        self._overlay_enabled = QCheckBox("Show live transcript overlay")
+        layout.addRow("", self._overlay_enabled)
+
+        overlay_opacity_layout = QHBoxLayout()
+        self._overlay_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._overlay_opacity_slider.setRange(50, 100)
+        self._overlay_opacity_label = QLabel()
+        self._overlay_opacity_slider.valueChanged.connect(
+            lambda v: self._overlay_opacity_label.setText(f"{v}%")
+        )
+        overlay_opacity_layout.addWidget(self._overlay_opacity_slider)
+        overlay_opacity_layout.addWidget(self._overlay_opacity_label)
+        layout.addRow("Overlay Opacity:", overlay_opacity_layout)
+
+        self._overlay_font_combo = QComboBox()
+        self._overlay_font_combo.addItem("Small (11px)", 11)
+        self._overlay_font_combo.addItem("Medium (13px)", 13)
+        self._overlay_font_combo.addItem("Large (16px)", 16)
+        layout.addRow("Overlay Font Size:", self._overlay_font_combo)
+
+        overlay_dismiss_layout = QHBoxLayout()
+        self._overlay_dismiss_slider = QSlider(Qt.Orientation.Horizontal)
+        self._overlay_dismiss_slider.setRange(1, 10)
+        self._overlay_dismiss_slider.setSingleStep(1)
+        self._overlay_dismiss_label = QLabel()
+        self._overlay_dismiss_slider.valueChanged.connect(
+            lambda v: self._overlay_dismiss_label.setText(
+                f"{v} {'sec' if v == 1 else 'secs'}"
+            )
+        )
+        overlay_dismiss_layout.addWidget(self._overlay_dismiss_slider)
+        overlay_dismiss_layout.addWidget(self._overlay_dismiss_label)
+        layout.addRow("Auto-Dismiss Delay:", overlay_dismiss_layout)
 
         return w
 
@@ -553,6 +603,25 @@ class SettingsWindow(QDialog):
         self._sound_feedback.setChecked(self._settings.get("sound_feedback", True))
         self._copy_to_clipboard.setChecked(self._settings.get("copy_to_clipboard", False))
 
+        # Overlay
+        self._overlay_enabled.setChecked(self._settings.get("overlay_enabled", True))
+        overlay_opacity_val = int(self._settings.get("overlay_opacity", 0.92) * 100)
+        self._overlay_opacity_slider.setValue(overlay_opacity_val)
+        self._overlay_opacity_label.setText(f"{self._overlay_opacity_slider.value()}%")
+
+        overlay_font = self._settings.get("overlay_font_size", 13)
+        font_idx = self._overlay_font_combo.findData(overlay_font)
+        if font_idx >= 0:
+            self._overlay_font_combo.setCurrentIndex(font_idx)
+        else:
+            self._overlay_font_combo.setCurrentIndex(1)  # Default to Medium
+
+        dismiss_val = int(self._settings.get("overlay_auto_dismiss_seconds", 3))
+        self._overlay_dismiss_slider.setValue(dismiss_val)
+        self._overlay_dismiss_label.setText(
+            f"{dismiss_val} {'sec' if dismiss_val == 1 else 'secs'}"
+        )
+
         # Hotkey
         current_hotkey = self._settings.get("hotkey", 0x78)
         self._hotkey_combo.clear()
@@ -784,7 +853,17 @@ class SettingsWindow(QDialog):
         self._settings.set("custom_vocabulary", self._custom_vocab.text().strip())
         hotkey_val = self._hotkey_combo.currentData()
         self._settings.set("hotkey", int(hotkey_val) if hotkey_val is not None else 0x78)
-        
+        # Overlay settings
+        self._settings.set("overlay_enabled", self._overlay_enabled.isChecked())
+        self._settings.set(
+            "overlay_opacity", self._overlay_opacity_slider.value() / 100.0
+        )
+        font_data = self._overlay_font_combo.currentData()
+        self._settings.set("overlay_font_size", int(font_data) if font_data else 13)
+        self._settings.set(
+            "overlay_auto_dismiss_seconds", self._overlay_dismiss_slider.value()
+        )
+
         self._settings.save()
         self.saved.emit()
         self.close()

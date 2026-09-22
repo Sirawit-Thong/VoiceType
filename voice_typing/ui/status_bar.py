@@ -47,6 +47,7 @@ class StatusBarSignals(QObject):
     test_microphone = Signal()
     exit_app = Signal()
     language_changed = Signal(str)
+    toggle_overlay = Signal()
 
 
 class _ControlWindow(QWidget):
@@ -192,6 +193,7 @@ class StatusBar:
         self._saved_position = saved_position
         self._opacity: float = 0.94
         self._language: str = "auto"
+        self._overlay_enabled: bool = True
 
     @property
     def style(self) -> str:
@@ -208,6 +210,12 @@ class StatusBar:
 
     def set_language(self, lang: str) -> None:
         self._language = lang
+
+    def set_overlay_enabled(self, enabled: bool) -> None:
+        """Update the 'Show Transcript' toggle check state in the menu."""
+        self._overlay_enabled = enabled
+        if hasattr(self, "_overlay_toggle_action") and self._overlay_toggle_action is not None:
+            self._overlay_toggle_action.setChecked(enabled)
 
     def set_hotkey_name(self, name: str) -> None:
         self._hotkey_name = name
@@ -366,6 +374,16 @@ class StatusBar:
                 lambda checked=False, c=code: self.signals.language_changed.emit(c)
             )
             lang_menu.addAction(action)
+
+        menu.addSeparator()
+
+        self._overlay_toggle_action = QAction("Show Transcript", menu)
+        self._overlay_toggle_action.setCheckable(True)
+        self._overlay_toggle_action.setChecked(True)
+        self._overlay_toggle_action.triggered.connect(self.signals.toggle_overlay.emit)
+        menu.addAction(self._overlay_toggle_action)
+
+        menu.addSeparator()
 
         test_action = QAction("Test Microphone", menu)
         test_action.triggered.connect(self.signals.test_microphone.emit)

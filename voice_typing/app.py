@@ -26,6 +26,7 @@ from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
+from voice_typing.ui.transcript_overlay import TranscriptOverlay
 from voice_typing.ui.tray import TrayIcon
 from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
 from voice_typing.windows.startup import set_startup
@@ -631,6 +632,15 @@ class VoiceTypeApp:
         self._settings_win: SettingsWindow | None = None
         self._worker: WorkerThread | None = None
         self._mic_tester: _MicTester | None = None
+        self._overlay = TranscriptOverlay()
+        # Apply overlay settings on startup
+        self._overlay.set_enabled(self._settings.get("overlay_enabled", True))
+        self._overlay.set_opacity(self._settings.get("overlay_opacity", 0.92))
+        self._overlay.set_font_size(self._settings.get("overlay_font_size", 13))
+        self._overlay.set_max_height(self._settings.get("overlay_max_height", 300))
+        self._overlay.set_auto_dismiss_seconds(
+            self._settings.get("overlay_auto_dismiss_seconds", 3)
+        )
 
     def run(self) -> int:
         self._tray.signals.start_recording.connect(self._start_recording)
@@ -650,10 +660,12 @@ class VoiceTypeApp:
         self._status_bar.signals.exit_app.connect(self._exit)
         self._status_bar.signals.language_changed.connect(self._on_language_changed)
         self._status_bar.signals.test_microphone.connect(self._on_test_microphone)
+        self._status_bar.signals.toggle_overlay.connect(self._on_toggle_overlay)
         self._run_setup_wizard()
         self._tray.set_language(self._settings.get("language", "auto"))
         self._status_bar.set_language(self._settings.get("language", "auto"))
         self._tray.set_fast_mode(self._settings.get("fast_mode", True))
+        self._status_bar.set_overlay_enabled(self._settings.get("overlay_enabled", True))
         self._tray.show()
         # Don't show status bar on startup — only tray icon visible
         # Status bar will appear when needed (recording, error, or user clicks tray)
@@ -703,6 +715,7 @@ class VoiceTypeApp:
         self._worker._signals.recording_started.connect(self._on_recording_started)
         self._worker._signals.recording_stopped.connect(self._on_recording_stopped)
         self._worker._signals.partial_received.connect(self._on_partial)
+        self._worker._signals.partial_received.connect(self._overlay.add_partial)
         self._worker._signals.error.connect(self._on_error)
         self._worker._signals.status.connect(self._on_status)
         self._worker._signals.audio_level.connect(self._status_bar.set_level)
@@ -724,6 +737,7 @@ class VoiceTypeApp:
         if self._settings.get("show_status_bar", True):
             self._status_bar.show()
         self._status_bar.set_state("listening", "Listening...")
+        self._overlay.show()
         if self._settings.get("sound_feedback", True):
             winsound.MessageBeep(winsound.MB_OK)
 
@@ -731,6 +745,7 @@ class VoiceTypeApp:
         self._tray.update_recording_state(False)
         self._status_bar.update_recording_state(False)
         self._status_bar.set_state("ready")
+        self._overlay.start_auto_dismiss()
         if self._settings.get("sound_feedback", True):
             winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
@@ -754,6 +769,14 @@ class VoiceTypeApp:
         )
         self._mic_tester.finished_test.connect(self._on_mic_test_result)
         self._mic_tester.start()
+
+    def _on_toggle_overlay(self) -> None:
+        """Toggle the transcript overlay on/off from the status bar menu."""
+        new_state = not self._overlay.is_enabled
+        self._overlay.set_enabled(new_state)
+        self._settings.set("overlay_enabled", new_state)
+        self._settings.save()
+        self._status_bar.set_overlay_enabled(new_state)
 
     def _on_mic_test_result(self, success: bool, msg: str) -> None:
         if success:
@@ -808,6 +831,14 @@ class VoiceTypeApp:
         self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
         self._tray.set_language(self._settings.get("language", "auto"))
         self._tray.set_fast_mode(self._settings.get("fast_mode", True))
+        # Propagate overlay settings
+        self._overlay.set_enabled(self._settings.get("overlay_enabled", True))
+        self._overlay.set_opacity(self._settings.get("overlay_opacity", 0.92))
+        self._overlay.set_font_size(self._settings.get("overlay_font_size", 13))
+        self._overlay.set_max_height(self._settings.get("overlay_max_height", 300))
+        self._overlay.set_auto_dismiss_seconds(
+            self._settings.get("overlay_auto_dismiss_seconds", 3)
+        )
         if self._worker is not None and self._worker.isRunning():
             self._worker.reconfigure_hotkey()
             self._worker.update_settings()
@@ -846,6 +877,7 @@ class VoiceTypeApp:
                 self._mic_tester.terminate()
             if self._settings_win is not None:
                 self._settings_win.close()
+            self._overlay.close()
             self._status_bar.close()
             self._tray.hide()
         except Exception:
