@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.1.3"
+VERSION = "0.2.0"
 RELEASE_URL = "https://github.com/Sirawit-Thong/VoiceType/releases/tag/v0.1.3"
 
 
