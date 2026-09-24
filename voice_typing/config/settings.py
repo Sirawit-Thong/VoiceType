@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.2.0"
-RELEASE_URL = "https://github.com/Sirawit-Thong/VoiceType/releases/tag/v0.1.3"
+VERSION = "0.2.1"
+RELEASE_URL = f"https://github.com/Sirawit-Thong/VoiceType/releases/tag/v{VERSION}"
 
 
 def get_asset_path(filename: str = "icon.png") -> Path:
