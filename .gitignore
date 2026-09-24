@@ -28,6 +28,7 @@ MANIFEST
 
 # PyInstaller
 *.manifest
+dist/
 
 # Environments
 .env

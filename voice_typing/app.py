@@ -18,6 +18,7 @@ from PySide6.QtCore import QThread, Signal, QObject
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
+from voice_typing.ai.text_normalize import normalize_transcript
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
@@ -224,6 +225,9 @@ class WorkerThread(QThread):
     def _inject(self, text: str) -> None:
         if not text:
             return
+        text = normalize_transcript(text, self._settings.get("language", "auto"))
+        if not text:
+            return
         raw = text
         text = auto_space(self._last_injected, text)
         self._last_injected = text
@@ -242,6 +246,9 @@ class WorkerThread(QThread):
 
     def _re_inject(self, text: str) -> None:
         # Re-insert previously dictated text without touching history.
+        if not text:
+            return
+        text = normalize_transcript(text, self._settings.get("language", "auto"))
         if not text:
             return
         text = auto_space(self._last_injected, text)

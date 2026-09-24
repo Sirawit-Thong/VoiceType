@@ -22,9 +22,29 @@ REST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL = "models/gemini-3.1-flash-live-preview"
 
 LANGUAGE_INSTRUCTIONS = {
-    "auto": "Support both Thai and English. Transcribe speech naturally in the spoken language without translation.",
-    "thai": "Transcribe the user's speech strictly into Thai (ภาษาไทย). Do not output English or translate into English. Write pure Thai script.",
-    "english": "Transcribe the user's speech strictly into English. Do not output Thai or translate into Thai. Write in English.",
+    "auto": (
+        "Support both Thai and English. Transcribe speech naturally in the spoken "
+        "language without translation. Output ONLY Thai script or English letters — "
+        "never any other script, for example Korean (Hangul), Japanese (Hiragana/"
+        "Katakana), Chinese (Han), or Cyrillic. If the speech contains another "
+        "language, transliterate it phonetically into Thai script. Thai has no "
+        "spaces between words: never insert spaces between Thai words — use a "
+        "space only after punctuation."
+    ),
+    "thai": (
+        "Transcribe the user's speech strictly into Thai (ภาษาไทย). Do not output "
+        "English or translate into English. Write pure Thai script (สระไทย) only: "
+        "transliterate any non-Thai speech (English brand names, Korean, Japanese, "
+        "etc.) into Thai script, and never output other scripts such as Hangul, "
+        "Japanese, Chinese, or Cyrillic. Thai has no spaces between words: never "
+        "insert spaces between Thai words — use a space only after punctuation."
+    ),
+    "english": (
+        "Transcribe the user's speech strictly into English. Do not output Thai or "
+        "translate into Thai. Transliterate any other language (Korean, Japanese, "
+        "etc.) into English letters using the Latin alphabet. Never output Thai "
+        "script or any non-Latin script. Write in English."
+    ),
 }
 
 
