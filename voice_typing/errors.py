@@ -136,6 +136,29 @@ def should_rotate_on_error(category: ErrorCategory | None, reason: str | None) -
     return False
 
 
+def is_server_error_5xx(
+    category: ErrorCategory | None, reason: str | None
+) -> bool:
+    """Return True when a failure looks like a transient 5xx server error.
+
+    Requires ``category`` to be :attr:`ErrorCategory.RETRY` *and* the
+    reason to mention a 5xx code (500/502/503/504) or the standard
+    ``"Server error (transient)"`` phrasing produced by
+    :func:`classify_http_status`.  Used to select the extended 5-round
+    reconnect policy.  Does not affect classification or key rotation.
+    """
+    if category != ErrorCategory.RETRY:
+        return False
+    lower = (reason or "").lower()
+    if not lower:
+        return False
+    if any(code in lower for code in ("500", "502", "503", "504")):
+        return True
+    if "server error" in lower:
+        return True
+    return False
+
+
 def _extract_status_code(msg: str) -> int | None:
     """Try to pull an HTTP status code number out of an error message.
 

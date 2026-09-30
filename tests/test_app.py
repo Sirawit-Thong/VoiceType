@@ -1209,3 +1209,312 @@ def test_midstream_exhausted_single_key_errors_without_reconnect():
         assert len(errors) == 1
         assert "Connection lost" in errors[0]
         assert worker._key_pool.is_exhausted is True
+
+
+# ── Gemini 500 5xx policy (5 rounds, queue across reconnect) ─────────
+
+def _make_5xx_client(fail: bool = True):
+    """Fake GeminiLiveClient with RETRY 500 reason (fake keys only)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from voice_typing.errors import ErrorCategory
+
+    mock_client = MagicMock()
+    mock_client.last_error_category = ErrorCategory.RETRY
+    mock_client.last_error_reason = "HTTP 500: Server error (transient)"
+    mock_client.is_connected = (not fail)
+    if fail:
+        # Sync MagicMock so the failure raises at call time even when
+        # asyncio.new_event_loop is mocked (mirrors existing reconnect tests).
+        mock_client.connect = MagicMock(
+            side_effect=Exception("HTTP 500 Internal Server Error")
+        )
+    else:
+        # Sync success: with a mocked loop run_until_complete() is a no-op.
+        mock_client.connect = MagicMock(return_value=None)
+    return mock_client
+
+
+def test_500_midstream_reconnects_on_attempt_4():
+    """500 uses 5 rounds (2,4,8,15,30) — success on attempt 4 (old code died at 3)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-fake")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+
+        bad1, bad2, bad3 = (_make_5xx_client(True) for _ in range(3))
+        good = _make_5xx_client(False)
+        statuses: list[str] = []
+        worker._signals.status.connect(statuses.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient",
+            side_effect=[bad1, bad2, bad3, good],
+        ) as factory:
+            with patch.object(worker, "_sleep", return_value=False):
+                loop = MagicMock()
+                with patch("voice_typing.app.asyncio") as mock_asyncio:
+                    mock_asyncio.new_event_loop.return_value = loop
+                    mock_asyncio.set_event_loop = MagicMock()
+                    result = worker._reconnect(
+                        last_category=ErrorCategory.RETRY,
+                        last_reason="HTTP 500: Server error (transient)",
+                    )
+
+        assert result is True
+        assert factory.call_count == 4
+        assert worker._key_pool.current_index == 0
+        assert any("/5" in s for s in statuses)
+        if worker._loop is not None:
+            worker._loop = None
+
+
+def test_500_exhaustion_uses_five_attempts_no_rotation():
+    """5xx exhaustion tries 5 times and never rotates keys."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+        start_index = worker._key_pool.current_index
+
+        def _bad():
+            return _make_5xx_client(True)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient",
+            side_effect=[_bad() for _ in range(5)],
+        ) as factory:
+            with patch.object(worker, "_sleep", return_value=False):
+                result = worker._reconnect(
+                    last_category=ErrorCategory.RETRY,
+                    last_reason="HTTP 500 Internal Server Error",
+                )
+
+        assert result is False
+        assert factory.call_count == 5
+        assert worker._key_pool.current_index == start_index
+        assert worker._key_pool.is_exhausted is False
+        assert worker._last_reconnect_5xx is True
+
+
+def test_non_5xx_reconnect_still_three_attempts():
+    """Non-5xx RETRY keeps the legacy 3-round policy (backward compat)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-fake")
+        worker = WorkerThread(mgr)
+        worker._should_stop = False
+
+        mock_client = MagicMock()
+        mock_client.last_error_category = ErrorCategory.RETRY
+        mock_client.last_error_reason = "Network error: ConnectionRefused"
+        mock_client.connect = MagicMock(side_effect=Exception("connection reset"))
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client) as factory:
+            with patch.object(worker, "_sleep", return_value=False):
+                result = worker._reconnect()
+
+        assert result is False
+        assert factory.call_count == 3
+
+
+def test_press_during_reconnect_queues_pending_no_error():
+    """Hotkey during reconnect sets pending + status (no error dead-end)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._client = MagicMock()
+        worker._client.is_connected = False
+        with worker._lock:
+            worker._reconnecting = True
+
+        errors: list[str] = []
+        statuses: list[str] = []
+        worker._signals.error.connect(errors.append)
+        worker._signals.status.connect(statuses.append)
+
+        worker._start_recording()
+
+        assert errors == []
+        with worker._lock:
+            assert worker._pending_record is True
+        assert any("Reconnecting" in s for s in statuses)
+        assert worker._recorder.start.call_count == 0
+
+
+def test_reconnect_success_auto_starts_queued_recording():
+    """Pending press auto-starts once after reconnect (queue across reconnect)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-fake")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._should_stop = False
+        worker._recorder = MagicMock()
+        with worker._lock:
+            worker._pending_record = True
+
+        good = MagicMock()
+        good.last_error_category = None
+        good.last_error_reason = ""
+        good.is_connected = True
+        good.connect = MagicMock(return_value=None)
+
+        started: list[bool] = []
+        worker._signals.recording_started.connect(lambda: started.append(True))
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=good):
+            with patch.object(worker, "_sleep", return_value=False):
+                loop = MagicMock()
+                with patch("voice_typing.app.asyncio") as mock_asyncio:
+                    mock_asyncio.new_event_loop.return_value = loop
+                    mock_asyncio.set_event_loop = MagicMock()
+                    result = worker._reconnect()
+
+        assert result is True
+        assert worker._recorder.start.call_count == 1
+        assert started == [True]
+        with worker._lock:
+            assert worker._pending_record is False
+        if worker._loop is not None:
+            worker._loop = None
+
+
+def test_5xx_exhaustion_stays_retryable_no_permanent_dead():
+    """Mid-stream 500 exhaustion emits Server-busy status (not fatal error)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-fake")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        client1 = MagicMock()
+        client1.last_error_category = None
+        client1.last_error_reason = ""
+        client1.is_connected = True
+        client1.connect = AsyncMock(return_value=None)
+
+        def _fail_500(*args, **kwargs):
+            client1.last_error_category = ErrorCategory.RETRY
+            client1.last_error_reason = "HTTP 500: Server error (transient)"
+            client1.is_connected = False
+            raise Exception("HTTP 500 Internal Server Error")
+
+        client1.receive_transcript = MagicMock(side_effect=_fail_500)
+
+        errors: list[str] = []
+        statuses: list[str] = []
+        worker._signals.error.connect(errors.append)
+        worker._signals.status.connect(statuses.append)
+
+        def _fake_reconnect(last_category=None, last_reason=""):
+            worker._last_reconnect_5xx = True
+            return False
+
+        def _stop_sleep(_s):
+            worker._should_stop = True
+            return True
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=client1):
+            with patch.object(
+                worker, "_reconnect", side_effect=_fake_reconnect
+            ):
+                with patch.object(worker, "_sleep", side_effect=_stop_sleep):
+                    worker.run()
+
+        assert any("Server busy" in s for s in statuses)
+        assert not any("could not reconnect" in e for e in errors)
+        assert worker._server_busy_retryable is True
+        # 500 never rotates keys
+        assert worker._key_pool.current_index == 0
+
+
+def test_status_bar_reconnecting_state_color():
+    """StatusBar reconnecting state is yellow #fbbc04 (offscreen)."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from voice_typing.ui.status_bar import StatusBar
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    bar = StatusBar()
+    bar.set_state("reconnecting", "Reconnecting... (attempt 1/5)")
+    assert bar._state_color == "#fbbc04"
+    bar.set_state("error", "oops")
+    assert bar._state_color == "#9aa0a6"
+
+
+def test_on_status_routes_reconnecting():
+    """VoiceTypeApp._on_status shows reconnecting state for reconnect msgs."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        app._on_status("Reconnecting... (attempt 2/5)")
+        app._status_bar.set_state.assert_called_once_with(
+            "reconnecting", "Reconnecting... (attempt 2/5)"
+        )
+        app._status_bar.set_state.reset_mock()
+        app._on_status("Reconnected to Gemini Live")
+        app._status_bar.set_state.assert_called_once_with(
+            "ready", "Reconnected to Gemini Live"
+        )

@@ -562,18 +562,20 @@ class StatusBar:
             "ready": "#34a853",
             "listening": "#ea4335",
             "processing": "#fbbc04",
+            "reconnecting": "#fbbc04",
             "error": "#9aa0a6",
         }
         titles = {
             "ready": "Ready",
             "listening": "Listening...",
             "processing": "Processing...",
+            "reconnecting": "Reconnecting...",
             "error": "Error",
         }
         color = colors.get(state, "#9aa0a6")
         self._state_color = color
         if self._capsule is not None:
-            if state == "listening":
+            if state in ("listening", "reconnecting"):
                 border_css = f"border: 1.5px solid {self._state_color};"
             else:
                 border_css = "border: 1px solid #3c4043;"
@@ -596,7 +598,7 @@ class StatusBar:
                 self._status_label.setText(title)
         if self._window is not None:
             self._window.setToolTip(text if text else title)
-        if state == "listening":
+        if state in ("listening", "reconnecting"):
             self._start_pulse()
         else:
             self._stop_pulse()

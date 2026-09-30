@@ -282,3 +282,76 @@ class TestShouldRotateOnError:
         from voice_typing.errors import should_rotate_on_error
         assert should_rotate_on_error(None, "") is False
         assert should_rotate_on_error(None, None) is False
+
+
+# ── is_server_error_5xx ──────────────────────────────────────────
+
+class TestIsServerError5xx:
+    def test_500_retry_is_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "HTTP 500: Server error (transient)"
+        ) is True
+
+    def test_502_retry_is_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "HTTP 502 Bad Gateway"
+        ) is True
+
+    def test_503_retry_is_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "HTTP 503 Service Unavailable"
+        ) is True
+
+    def test_504_retry_is_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "HTTP 504 Gateway Timeout"
+        ) is True
+
+    def test_server_error_phrase_is_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "HTTP Server error (transient)"
+        ) is True
+
+    def test_network_retry_is_not_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.RETRY, "Network error: ConnectionRefused"
+        ) is False
+
+    def test_429_fatal_is_not_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.FATAL, "HTTP 429: Quota exceeded"
+        ) is False
+
+    def test_500_fatal_is_not_5xx(self):
+        """Category must be RETRY — FATAL 500 never selects the 5xx policy."""
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(
+            ErrorCategory.FATAL, "HTTP 500 Internal Server Error"
+        ) is False
+
+    def test_none_category_is_not_5xx(self):
+        from voice_typing.errors import is_server_error_5xx
+        assert is_server_error_5xx(None, "HTTP 500 Internal Server Error") is False
+
+    def test_empty_reason_is_not_5xx(self):
+        from voice_typing.errors import ErrorCategory, is_server_error_5xx
+        assert is_server_error_5xx(ErrorCategory.RETRY, "") is False
+        assert is_server_error_5xx(ErrorCategory.RETRY, None) is False
+
+    def test_classify_and_rotate_unchanged_for_500(self):
+        """classify stays RETRY and should_rotate stays False for 500."""
+        from voice_typing.errors import (
+            ErrorCategory,
+            classify_http_status,
+            should_rotate_on_error,
+        )
+        cat, reason = classify_http_status(500)
+        assert cat == ErrorCategory.RETRY
+        assert should_rotate_on_error(cat, reason) is False

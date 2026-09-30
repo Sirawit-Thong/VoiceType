@@ -22,7 +22,7 @@ from voice_typing.ai.text_normalize import normalize_transcript
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
-from voice_typing.errors import ErrorCategory, should_rotate_on_error
+from voice_typing.errors import ErrorCategory, is_server_error_5xx, should_rotate_on_error
 from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.speech.key_pool import KeyPool
@@ -87,6 +87,15 @@ class WorkerThread(QThread):
         self._lock = threading.Lock()
         self._recording = False
         self._should_stop = False
+        # 5xx UX: queue one pending recording across reconnect.
+        # _reconnecting is True while _reconnect() runs; _pending_record
+        # means "user pressed hotkey during reconnect/idle — auto-start".
+        # _server_busy_retryable keeps the thread alive after 5xx
+        # exhaustion so the next hotkey press can retry (no permanent dead).
+        self._reconnecting = False
+        self._pending_record = False
+        self._server_busy_retryable = False
+        self._last_reconnect_5xx = False
         self._last_injected = ""
         self._last_injected_raw = ""
         self._last_inject_time = 0.0
@@ -234,25 +243,42 @@ class WorkerThread(QThread):
                         pass
 
     def _start_recording(self) -> None:
+        queue_for_reconnect = False
         with self._lock:
             if self._recording:
                 return
             client = self._client
-            if client is None or not client.is_connected:
+            connected = client is not None and client.is_connected
+            if connected:
+                try:
+                    self._recorder.start(
+                        callback=self._on_audio_chunk,
+                        device_id=self._settings.get("microphone_device_id"),
+                    )
+                except Exception:
+                    log.exception("Failed to start microphone")
+                    self._signals.error.emit("Failed to start microphone")
+                    return
+                self._recording = True
+                self._server_busy_retryable = False
+                self._pending_record = False
+            elif self._reconnecting or self._server_busy_retryable:
+                # Reconnect in progress (or 5xx retryable idle): queue one
+                # pending recording; _reconnect() auto-starts on success.
+                # Idle wait loop in run() picks up the retryable case.
+                self._pending_record = True
+                queue_for_reconnect = True
+            else:
                 self._signals.error.emit(
                     "Not connected to Gemini Live yet - wait a moment and press the hotkey again"
                 )
                 return
-            try:
-                self._recorder.start(
-                    callback=self._on_audio_chunk,
-                    device_id=self._settings.get("microphone_device_id"),
-                )
-            except Exception:
-                log.exception("Failed to start microphone")
-                self._signals.error.emit("Failed to start microphone")
-                return
-            self._recording = True
+        if queue_for_reconnect:
+            log.info("Recording queued across reconnect")
+            self._signals.status.emit(
+                "Reconnecting — will start automatically..."
+            )
+            return
         log.info("Recording started")
         self._signals.recording_started.emit()
 
@@ -576,9 +602,52 @@ class WorkerThread(QThread):
                     )
                     # fall through to loop close + _reconnect()
                 if loop is not None:
-                    loop.close()
+                    try:
+                        loop.close()
+                    except Exception:
+                        pass
                     self._loop = None
-                if not self._reconnect():
+                if not self._reconnect(
+                    last_category=category, last_reason=reason
+                ):
+                    if is_server_error_5xx(
+                        category, reason
+                    ) or self._last_reconnect_5xx:
+                        # 5xx exhaustion: do NOT go permanently dead. Stay
+                        # alive in retryable idle so the next hotkey press
+                        # queues and retries instead of requiring a restart.
+                        self._signals.status.emit(
+                            "Server busy, ready to retry — press hotkey again"
+                        )
+                        with self._lock:
+                            self._reconnecting = False
+                            self._server_busy_retryable = True
+                        self._client = None
+                        if self._loop is not None:
+                            try:
+                                self._loop.close()
+                            except Exception:
+                                pass
+                            self._loop = None
+                        while not self._should_stop:
+                            with self._lock:
+                                pending = self._pending_record
+                            if pending:
+                                if self._reconnect(
+                                    last_category=category,
+                                    last_reason=reason,
+                                ):
+                                    break
+                                with self._lock:
+                                    self._pending_record = False
+                                self._signals.status.emit(
+                                    "Server busy, ready to retry — press hotkey again"
+                                )
+                            if self._sleep(0.2):
+                                break
+                        if self._should_stop:
+                            break
+                        continue
                     self._signals.error.emit(
                         "Connection lost and could not reconnect: "
                         f"{last_error[:300] or 'unknown error'}"
@@ -605,82 +674,153 @@ class WorkerThread(QThread):
             if text.strip():
                 self._inject(text)
 
-    def _reconnect(self) -> bool:
-        delays = (2, 4, 8)
-        last_error = ""
-        for attempt, delay in enumerate(delays, start=1):
-            if self._should_stop:
-                return False
-            # Add jitter: ±30% of base delay, floor at 0.1s
-            jittered = max(0.1, delay + random.uniform(-delay * 0.3, delay * 0.3))
-            log.info("Reconnect attempt %d/%d (waiting %.1fs)...", attempt, len(delays), jittered)
-            self._signals.status.emit(
-                f"Reconnecting... (attempt {attempt}/{len(delays)})"
-                + self._key_status_suffix()
-            )
-            if self._sleep(jittered):
-                return False
-            api_key = self._key_pool.current_key or self._settings.get("api_key", "")
-            if not api_key:
-                self._signals.error.emit("No API key configured")
-                return False
-            loop = None
+    def _close_stale_for_reconnect(self) -> None:
+        """Abort stale client and close stale loop before a new attempt.
+
+        Guarantees a single WebSocket at a time (avoids 409 self-collision).
+        Masked logging only — never logs raw key material.
+        """
+        client = self._client
+        if client is not None:
             try:
-                client = GeminiLiveClient(
-                    api_key=api_key,
-                    model=self._settings.get("model") or MODEL,
-                )
-                self._current_language = self._settings.get("language", "auto")
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(
-                    client.connect(language=self._current_language)
-                )
-            except Exception as exc:
-                last_error = str(exc)
-                category = client.last_error_category
-                reason = client.last_error_reason or str(exc)[:300]
-                log.warning(
-                    "Reconnect attempt %d/%d failed [%s]: %s",
-                    attempt, len(delays), category, reason,
-                )
-                if loop is not None:
-                    loop.close()
-                rotatable = should_rotate_on_error(category, reason)
-                # FATAL on any attempt → rotate to next key or stop
-                if category == ErrorCategory.FATAL:
-                    if rotatable:
-                        self._key_pool.mark_failure(api_key)
-                        if self._key_pool.is_exhausted:
-                            self._signals.error.emit(
-                                f"Cannot reconnect: {reason} — check your API key and settings"
-                            )
-                            return False
-                        self._key_pool.advance()
-                        self._signals.status.emit(
-                            f"Reconnect attempt {attempt} of {len(delays)} failed - trying next key..."
-                            + self._key_status_suffix()
-                        )
-                        continue
-                    self._signals.error.emit(
-                        f"Cannot reconnect: {reason} — check your API key and settings"
-                    )
+                client.abort()
+            except Exception:
+                pass
+            self._client = None
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._loop = None
+
+    def _reconnect(
+        self,
+        last_category: ErrorCategory | None = None,
+        last_reason: str = "",
+    ) -> bool:
+        base_delays = [2, 4, 8, 15, 30]
+        initial_is_5xx = is_server_error_5xx(last_category, last_reason or "")
+        if initial_is_5xx:
+            delays: list[int] = list(base_delays)
+        else:
+            delays = list(base_delays[:3])
+        self._last_reconnect_5xx = initial_is_5xx
+        with self._lock:
+            self._reconnecting = True
+        try:
+            attempt = 0
+            while attempt < len(delays):
+                if self._should_stop:
                     return False
+                attempt += 1
+                delay = delays[attempt - 1]
+                total = len(delays)
+                # Add jitter: ±30% of base delay, floor at 0.1s
+                jittered = max(0.1, delay + random.uniform(-delay * 0.3, delay * 0.3))
+                log.info(
+                    "Reconnect attempt %d/%d (waiting %.1fs)...",
+                    attempt, total, jittered,
+                )
                 self._signals.status.emit(
-                    f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
+                    f"Reconnecting... (attempt {attempt}/{total})"
                     + self._key_status_suffix()
                 )
-                continue
-            self._client = client
-            self._loop = loop
-            self._key_pool.mark_success(api_key)
-            log.info("Reconnected to Gemini Live ✓")
-            self._signals.status.emit(
-                "Reconnected to Gemini Live" + self._key_status_suffix()
-            )
-            return True
-        log.error("All %d reconnect attempts exhausted", len(delays))
-        return False
+                if self._sleep(jittered):
+                    return False
+                # Always close stale client/loop before a new attempt so
+                # only one WS exists at a time.
+                self._close_stale_for_reconnect()
+                api_key = self._key_pool.current_key or self._settings.get("api_key", "")
+                if not api_key:
+                    self._signals.error.emit("No API key configured")
+                    return False
+                loop = None
+                client = None
+                try:
+                    client = GeminiLiveClient(
+                        api_key=api_key,
+                        model=self._settings.get("model") or MODEL,
+                    )
+                    self._current_language = self._settings.get("language", "auto")
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(
+                        client.connect(language=self._current_language)
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+                    category = client.last_error_category if client is not None else None
+                    reason = (
+                        (client.last_error_reason if client is not None else "")
+                        or last_error[:300]
+                    )
+                    log.warning(
+                        "Reconnect attempt %d/%d failed [%s]: %s",
+                        attempt, len(delays), category, reason,
+                    )
+                    if loop is not None:
+                        try:
+                            loop.close()
+                        except Exception:
+                            pass
+                    if client is not None:
+                        try:
+                            client.abort()
+                        except Exception:
+                            pass
+                    # Per-attempt 5xx detection: extend a 3-round plan to 5.
+                    if is_server_error_5xx(category, reason):
+                        self._last_reconnect_5xx = True
+                        if len(delays) == 3:
+                            delays.extend([15, 30])
+                    rotatable = should_rotate_on_error(category, reason)
+                    # FATAL on any attempt → rotate to next key or stop.
+                    # 5xx is RETRY so never rotates (same outcome for all keys).
+                    if category == ErrorCategory.FATAL:
+                        if rotatable:
+                            self._key_pool.mark_failure(api_key)
+                            if self._key_pool.is_exhausted:
+                                self._signals.error.emit(
+                                    f"Cannot reconnect: {reason} — check your API key and settings"
+                                )
+                                return False
+                            self._key_pool.advance()
+                            self._signals.status.emit(
+                                f"Reconnect attempt {attempt} of {len(delays)} failed - trying next key..."
+                                + self._key_status_suffix()
+                            )
+                            continue
+                        self._signals.error.emit(
+                            f"Cannot reconnect: {reason} — check your API key and settings"
+                        )
+                        return False
+                    self._signals.status.emit(
+                        f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
+                        + self._key_status_suffix()
+                    )
+                    continue
+                self._client = client
+                self._loop = loop
+                self._key_pool.mark_success(api_key)
+                log.info("Reconnected to Gemini Live ✓")
+                self._signals.status.emit(
+                    "Reconnected to Gemini Live" + self._key_status_suffix()
+                )
+                with self._lock:
+                    self._reconnecting = False
+                    pending = self._pending_record
+                    self._pending_record = False
+                    self._server_busy_retryable = False
+                if pending and not self._should_stop:
+                    self._start_recording()
+                return True
+            log.error("All %d reconnect attempts exhausted", len(delays))
+            return False
+        finally:
+            with self._lock:
+                self._reconnecting = False
 
 
 class _MicTester(QThread):
@@ -864,7 +1004,11 @@ class VoiceTypeApp:
         self._tray.set_status("Error")
 
     def _on_status(self, msg: str) -> None:
-        self._status_bar.set_state("ready", msg)
+        low = (msg or "").lower()
+        if low.startswith("reconnecting"):
+            self._status_bar.set_state("reconnecting", msg)
+        else:
+            self._status_bar.set_state("ready", msg)
         self._tray.set_status(msg)
 
     def _on_test_microphone(self) -> None:
