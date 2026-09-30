@@ -11,6 +11,15 @@ def test_client_initial_state():
     assert client.is_connected is False
 
 
+def test_client_api_key_property_and_setter():
+    client = GeminiLiveClient(api_key="test-key-1")
+    assert client.api_key == "test-key-1"
+    client.set_api_key("test-key-2")
+    assert client.api_key == "test-key-2"
+    client.api_key = "test-key-3"
+    assert client.api_key == "test-key-3"
+
+
 @pytest.mark.asyncio
 async def test_connect_sends_setup_message():
     ws = AsyncMock()

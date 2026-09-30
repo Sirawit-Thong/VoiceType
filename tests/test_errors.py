@@ -225,3 +225,60 @@ class TestClassifyWsErrorEdgeCases:
         exc = Exception("connectionrefused: no route to host")
         cat, _ = classify_ws_error(exc)
         assert cat == ErrorCategory.RETRY
+
+
+# ── should_rotate_on_error ─────────────────────────────────────────
+
+class TestShouldRotateOnError:
+    def test_429_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "HTTP 429: Quota exceeded") is True
+
+    def test_quota_keyword_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "API quota / rate limit exceeded") is True
+
+    def test_resource_exhausted_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "resource_exhausted: quota exceeded") is True
+
+    def test_rate_limit_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "rate limit exceeded, slow down") is True
+
+    def test_401_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "HTTP 401 Unauthorized") is True
+
+    def test_403_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "API key is invalid or lacks permission") is True
+
+    def test_invalid_key_rotates(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "invalid api key provided") is True
+
+    def test_404_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "HTTP 404 Not Found") is False
+
+    def test_model_not_found_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "Requested model not found") is False
+
+    def test_400_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.FATAL, "HTTP 400: Bad request") is False
+
+    def test_500_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.RETRY, "HTTP 500 Internal Server Error") is False
+
+    def test_network_error_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(ErrorCategory.RETRY, "Network error: ConnectionRefused") is False
+
+    def test_empty_reason_does_not_rotate(self):
+        from voice_typing.errors import should_rotate_on_error
+        assert should_rotate_on_error(None, "") is False
+        assert should_rotate_on_error(None, None) is False

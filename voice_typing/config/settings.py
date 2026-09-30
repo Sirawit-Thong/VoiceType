@@ -24,6 +24,7 @@ def get_asset_path(filename: str = "icon.png") -> Path:
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "api_key": "",
+    "api_keys": [],
     "model": "models/gemini-3.1-flash-live-preview",
     "mode": "push_to_talk",
     "hotkey": 0x78,
@@ -71,6 +72,60 @@ class SettingsManager:
         else:
             self._data = dict(DEFAULT_SETTINGS)
             self.save()
+        self._sync_api_keys()
+
+    @staticmethod
+    def _normalize_keys(keys: Any) -> list[str]:
+        if not isinstance(keys, (list, tuple)):
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for k in keys:
+            if not isinstance(k, str):
+                continue
+            s = k.strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    def _sync_api_keys(self) -> None:
+        """Keep legacy ``api_key`` and ``api_keys`` consistent.
+
+        - If ``api_keys`` is missing/empty and legacy ``api_key`` is non-empty
+          → ``api_keys = [legacy]``.
+        - If ``api_keys`` is non-empty → mirror ``api_key = api_keys[0]``.
+        - Always store ``api_keys`` as a fresh normalized list (never share
+          the ``DEFAULT_SETTINGS`` list object).
+        """
+        raw_keys = self._data.get("api_keys", [])
+        keys = self._normalize_keys(raw_keys)
+        legacy = self._data.get("api_key", "")
+        legacy = legacy.strip() if isinstance(legacy, str) else ""
+        if not keys and legacy:
+            keys = [legacy]
+        if keys:
+            self._data["api_key"] = keys[0]
+        self._data["api_keys"] = list(keys)
+
+    def get_api_keys(self) -> list[str]:
+        keys = self._data.get("api_keys", [])
+        normalized = self._normalize_keys(keys)
+        # Legacy fallback if api_keys empty but api_key set (e.g. set directly).
+        if not normalized:
+            legacy = self._data.get("api_key", "")
+            if isinstance(legacy, str) and legacy.strip():
+                normalized = [legacy.strip()]
+        return list(normalized)
+
+    def set_api_keys(self, keys: list[str] | tuple[str, ...]) -> None:
+        normalized = self._normalize_keys(keys)
+        self._data["api_keys"] = list(normalized)
+        if normalized:
+            self._data["api_key"] = normalized[0]
+        else:
+            self._data["api_key"] = ""
 
     def save(self) -> None:
         import os

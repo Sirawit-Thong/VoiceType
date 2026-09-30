@@ -22,9 +22,10 @@ from voice_typing.ai.text_normalize import normalize_transcript
 from voice_typing.ai.text_processor import TextProcessor
 from voice_typing.audio.recorder import AudioRecorder
 from voice_typing.config.settings import SettingsManager, get_asset_path
-from voice_typing.errors import ErrorCategory
+from voice_typing.errors import ErrorCategory, should_rotate_on_error
 from voice_typing.speech.engine import TranscriptBuffer
 from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
+from voice_typing.speech.key_pool import KeyPool
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
 from voice_typing.ui.transcript_overlay import TranscriptOverlay
@@ -93,6 +94,38 @@ class WorkerThread(QThread):
         self._silence_threshold: float = self._settings.get("silence_threshold", 0.005)
         self._history_path = Path(self._settings._path).parent / "history.json"
         self._history = self._load_history()
+        self._key_pool = KeyPool(self._pool_keys_from_settings())
+
+    def _pool_keys_from_settings(self) -> list[str]:
+        get_keys = getattr(self._settings, "get_api_keys", None)
+        if callable(get_keys):
+            try:
+                keys = get_keys()
+                if isinstance(keys, list):
+                    return list(keys)
+                return KeyPool.normalize_keys(keys or [])
+            except Exception:
+                pass
+        legacy = self._settings.get("api_key", "") or ""
+        multi = self._settings.get("api_keys", []) or []
+        combined = list(multi) + ([legacy] if legacy else [])
+        return KeyPool.normalize_keys(combined)
+
+    def _sync_pool_from_settings(self) -> None:
+        try:
+            self._key_pool.set_keys(self._pool_keys_from_settings())
+        except Exception:
+            log.exception("Failed to resync key pool from settings")
+
+    def _key_status_suffix(self) -> str:
+        try:
+            n = self._key_pool.size
+            if n <= 0:
+                return ""
+            i = self._key_pool.current_index + 1
+            return f" (key {i}/{n} {KeyPool.mask(self._key_pool.current_key)})"
+        except Exception:
+            return ""
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
         if self._recording:
@@ -169,7 +202,8 @@ class WorkerThread(QThread):
         self.reconfigure_hotkey()
         self._silence_threshold = self._settings.get("silence_threshold", 0.005)
         self._injector.typing_speed = self._settings.get("typing_speed", 0)
-        api_key = self._settings.get("api_key", "")
+        self._sync_pool_from_settings()
+        api_key = self._key_pool.current_key or self._settings.get("api_key", "")
         if not self._settings.get("fast_mode", True) and api_key:
             self._processor = TextProcessor(
                 api_key=api_key,
@@ -403,7 +437,8 @@ class WorkerThread(QThread):
             self._loop = None
 
     def run(self) -> None:
-        api_key = self._settings.get("api_key", "")
+        self._sync_pool_from_settings()
+        api_key = self._key_pool.current_key or self._settings.get("api_key", "")
         if not api_key:
             self._signals.error.emit("No API key configured")
             return
@@ -419,8 +454,14 @@ class WorkerThread(QThread):
             )
         last_error = ""
         try:
-            self._signals.status.emit("Connecting to Gemini Live...")
+            self._signals.status.emit(
+                "Connecting to Gemini Live..." + self._key_status_suffix()
+            )
             while not self._should_stop:
+                api_key = self._key_pool.current_key or self._settings.get("api_key", "")
+                if not api_key:
+                    self._signals.error.emit("No API key configured")
+                    return
                 self._client = GeminiLiveClient(
                     api_key=api_key,
                     model=self._settings.get("model") or MODEL,
@@ -434,6 +475,7 @@ class WorkerThread(QThread):
                             language=self._current_language
                         )
                     )
+                    self._key_pool.mark_success(api_key)
                     break
                 except Exception as exc:
                     last_error = str(exc)
@@ -446,13 +488,27 @@ class WorkerThread(QThread):
                     self._client = None
                     if self._should_stop:
                         return
-                    # FATAL: bad API key / quota / model → don't retry
+                    rotatable = should_rotate_on_error(category, reason)
+                    # FATAL: bad API key / quota / model → rotate or stop
                     if category == ErrorCategory.FATAL:
+                        if rotatable:
+                            self._key_pool.mark_failure(api_key)
+                            if self._key_pool.is_exhausted:
+                                self._signals.error.emit(
+                                    f"Cannot connect: {reason} — check your API key and settings"
+                                )
+                                return
+                            self._key_pool.advance()
+                            self._signals.status.emit(
+                                "Key failed, trying next key..."
+                                + self._key_status_suffix()
+                            )
+                            continue
                         self._signals.error.emit(
                             f"Cannot connect: {reason} — check your API key and settings"
                         )
                         return
-                    # RETRY: transient → back off and try again
+                    # RETRY: transient → back off and try again (same key)
                     if self._sleep(3):
                         return
             if self._client is None or not self._client.is_connected:
@@ -463,13 +519,17 @@ class WorkerThread(QThread):
                 return
             if not self._settings.get("fast_mode", True):
                 self._processor = TextProcessor(
-                    api_key=api_key,
+                    api_key=self._key_pool.current_key or api_key,
                     vocabulary=self._settings.get("custom_vocabulary", ""),
                 )
             last_error = ""
             category = None
             reason = ""
             while not self._should_stop:
+                # Reset per-iteration so a post-reconnect iteration never
+                # reuses a stale FATAL category/reason from a prior failure.
+                category = None
+                reason = ""
                 loop = self._loop
                 if loop is None:
                     return
@@ -492,12 +552,29 @@ class WorkerThread(QThread):
                 if self._client.is_connected:
                     continue
                 self._stop_recording_on_connection_lost()
-                # Check if the error was fatal before attempting reconnect
+                # FATAL mid-stream: rotate to next key when per-key
+                # (429/401), otherwise stop. Then fall through to
+                # close loop + _reconnect() so failover actually happens.
                 if category == ErrorCategory.FATAL:
-                    self._signals.error.emit(
-                        f"Connection lost: {reason} — not reconnecting (check API key / quota)"
+                    rotatable = should_rotate_on_error(category, reason)
+                    if not rotatable:
+                        self._signals.error.emit(
+                            f"Connection lost: {reason} — not reconnecting (check API key / quota)"
+                        )
+                        return
+                    failing_key = self._key_pool.current_key or api_key
+                    self._key_pool.mark_failure(failing_key)
+                    if self._key_pool.is_exhausted:
+                        self._signals.error.emit(
+                            f"Connection lost: {reason} — check your API key and settings"
+                        )
+                        return
+                    self._key_pool.advance()
+                    self._signals.status.emit(
+                        "Key failed, trying next key..."
+                        + self._key_status_suffix()
                     )
-                    return
+                    # fall through to loop close + _reconnect()
                 if loop is not None:
                     loop.close()
                     self._loop = None
@@ -529,7 +606,6 @@ class WorkerThread(QThread):
                 self._inject(text)
 
     def _reconnect(self) -> bool:
-        api_key = self._settings.get("api_key", "")
         delays = (2, 4, 8)
         last_error = ""
         for attempt, delay in enumerate(delays, start=1):
@@ -540,8 +616,13 @@ class WorkerThread(QThread):
             log.info("Reconnect attempt %d/%d (waiting %.1fs)...", attempt, len(delays), jittered)
             self._signals.status.emit(
                 f"Reconnecting... (attempt {attempt}/{len(delays)})"
+                + self._key_status_suffix()
             )
             if self._sleep(jittered):
+                return False
+            api_key = self._key_pool.current_key or self._settings.get("api_key", "")
+            if not api_key:
+                self._signals.error.emit("No API key configured")
                 return False
             loop = None
             try:
@@ -565,20 +646,38 @@ class WorkerThread(QThread):
                 )
                 if loop is not None:
                     loop.close()
-                # FATAL on any attempt → stop immediately
+                rotatable = should_rotate_on_error(category, reason)
+                # FATAL on any attempt → rotate to next key or stop
                 if category == ErrorCategory.FATAL:
+                    if rotatable:
+                        self._key_pool.mark_failure(api_key)
+                        if self._key_pool.is_exhausted:
+                            self._signals.error.emit(
+                                f"Cannot reconnect: {reason} — check your API key and settings"
+                            )
+                            return False
+                        self._key_pool.advance()
+                        self._signals.status.emit(
+                            f"Reconnect attempt {attempt} of {len(delays)} failed - trying next key..."
+                            + self._key_status_suffix()
+                        )
+                        continue
                     self._signals.error.emit(
                         f"Cannot reconnect: {reason} — check your API key and settings"
                     )
                     return False
                 self._signals.status.emit(
                     f"Reconnect attempt {attempt} of {len(delays)} failed - retrying..."
+                    + self._key_status_suffix()
                 )
                 continue
             self._client = client
             self._loop = loop
+            self._key_pool.mark_success(api_key)
             log.info("Reconnected to Gemini Live ✓")
-            self._signals.status.emit("Reconnected to Gemini Live")
+            self._signals.status.emit(
+                "Reconnected to Gemini Live" + self._key_status_suffix()
+            )
             return True
         log.error("All %d reconnect attempts exhausted", len(delays))
         return False
@@ -859,13 +958,19 @@ class VoiceTypeApp:
 
 
     def _run_setup_wizard(self) -> None:
-        if self._settings.get("api_key"):
+        get_keys = getattr(self._settings, "get_api_keys", None)
+        existing = get_keys() if callable(get_keys) else [self._settings.get("api_key", "")]
+        if any(k.strip() for k in existing if isinstance(k, str)):
             return
         api_key, ok = QInputDialog.getText(
             None, "VoiceType Setup", "Enter your Gemini API Key:"
         )
         if ok and api_key.strip():
-            self._settings.set("api_key", api_key.strip())
+            set_keys = getattr(self._settings, "set_api_keys", None)
+            if callable(set_keys):
+                set_keys([api_key.strip()])
+            else:
+                self._settings.set("api_key", api_key.strip())
             self._settings.save()
         else:
             QMessageBox.warning(

@@ -612,6 +612,7 @@ def test_reconnect_all_attempts_fail_returns_false():
         mgr.set("model", "models/gemini-3.1-flash-live-preview")
         worker = WorkerThread(mgr)
         worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
         worker._should_stop = False
 
         # Make connect always fail with RETRY error
@@ -642,6 +643,7 @@ def test_reconnect_second_attempt_succeeds():
         mgr.set("model", "models/gemini-3.1-flash-live-preview")
         worker = WorkerThread(mgr)
         worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
         worker._should_stop = False
 
         call_count = 0
@@ -684,6 +686,7 @@ def test_reconnect_fatal_error_stops_immediately():
         mgr.set("model", "models/gemini-3.1-flash-live-preview")
         worker = WorkerThread(mgr)
         worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
         worker._should_stop = False
 
         mock_client = MagicMock()
@@ -741,6 +744,7 @@ def test_run_fatal_on_initial_connect():
         mgr.set("model", "models/gemini-3.1-flash-live-preview")
         worker = WorkerThread(mgr)
         worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
         worker._should_stop = False
 
         mock_client = MagicMock()
@@ -756,3 +760,452 @@ def test_run_fatal_on_initial_connect():
             worker.run()
 
         assert any("API key" in msg or "Cannot connect" in msg for msg in error_messages)
+
+
+# ── Multi-key pool rotation tests ────────────────────────────────────
+
+def test_worker_builds_pool_from_settings():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        worker = WorkerThread(mgr)
+        assert worker._key_pool.keys == ["test-key-1", "test-key-2"]
+        assert worker._key_pool.current_key == "test-key-1"
+
+
+def test_worker_pool_legacy_fallback():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-legacy")
+        worker = WorkerThread(mgr)
+        # load() syncs api_keys=[legacy], so pool picks it up.
+        assert worker._key_pool.current_key == "test-key-legacy"
+
+
+def test_run_rotates_to_second_key_on_quota():
+    """First key fails with rotatable 429 → worker tries second key and connects."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        bad = MagicMock()
+        bad.last_error_category = ErrorCategory.FATAL
+        bad.last_error_reason = "HTTP 429: Quota exceeded"
+        bad.is_connected = False
+        bad.connect = MagicMock(side_effect=Exception("429 quota exceeded"))
+
+        good = MagicMock()
+        good.last_error_category = None
+        good.last_error_reason = ""
+        good.is_connected = True
+        good.connect = AsyncMock(return_value=None)
+
+        def _stop_after_connect(**kwargs):
+            worker._should_stop = True
+            raise RuntimeError("stop-loop")
+
+        good.receive_transcript = MagicMock(side_effect=_stop_after_connect)
+
+        errors: list[str] = []
+        statuses: list[str] = []
+        worker._signals.error.connect(errors.append)
+        worker._signals.status.connect(statuses.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient", side_effect=[bad, good]
+        ):
+            worker.run()
+
+        assert errors == []
+        assert worker._key_pool.current_key == "test-key-2"
+        assert any("key" in s and "2/2" in s for s in statuses)
+
+
+def test_run_aborts_only_when_pool_exhausted():
+    """All keys failing with rotatable errors → single FATAL abort error."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        def _bad_client():
+            mock_client = MagicMock()
+            mock_client.last_error_category = ErrorCategory.FATAL
+            mock_client.last_error_reason = "HTTP 429: Quota exceeded"
+            mock_client.is_connected = False
+            mock_client.connect = MagicMock(side_effect=Exception("429 quota"))
+            return mock_client
+
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+
+        with patch("voice_typing.app.GeminiLiveClient", side_effect=[_bad_client(), _bad_client()]):
+            worker.run()
+
+        assert len(errors) == 1
+        assert "Cannot connect" in errors[0]
+        assert worker._key_pool.is_exhausted is True
+
+
+def test_run_nonrotatable_fatal_does_not_rotate():
+    """404 model-not-found aborts immediately without consuming the pool."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        mock_client = MagicMock()
+        mock_client.last_error_category = ErrorCategory.FATAL
+        mock_client.last_error_reason = "HTTP 404: Model not found"
+        mock_client.is_connected = False
+        mock_client.connect = MagicMock(side_effect=Exception("404 not found"))
+
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+
+        with patch("voice_typing.app.GeminiLiveClient", return_value=mock_client) as factory:
+            worker.run()
+
+        assert factory.call_count == 1
+        assert len(errors) == 1
+        assert worker._key_pool.is_exhausted is False
+
+
+def test_reconnect_rotates_on_rotatable_fatal():
+    """_reconnect tries the next key after a rotatable FATAL failure."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        bad = MagicMock()
+        bad.last_error_category = ErrorCategory.FATAL
+        bad.last_error_reason = "HTTP 429: Quota exceeded"
+        bad.connect = AsyncMock(side_effect=Exception("429 quota"))
+
+        good = MagicMock()
+        good.last_error_category = None
+        good.last_error_reason = ""
+        good.connect = AsyncMock(return_value=None)
+
+        with patch("voice_typing.app.GeminiLiveClient", side_effect=[bad, good]):
+            with patch.object(worker, "_sleep", return_value=False):
+                result = worker._reconnect()
+
+        assert result is True
+        assert worker._key_pool.current_key == "test-key-2"
+        assert worker._client is good
+        if worker._loop is not None:
+            worker._loop.close()
+            worker._loop = None
+
+
+def test_update_settings_resyncs_pool_and_processor_key():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("fast_mode", False)
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker.update_settings()
+        assert worker._key_pool.keys == ["test-key-1", "test-key-2"]
+        assert worker._processor is not None
+        assert worker._processor._api_key == "test-key-1"
+
+        mgr.set_api_keys(["test-key-9"])
+        worker.update_settings()
+        assert worker._key_pool.keys == ["test-key-9"]
+        assert worker._processor._api_key == "test-key-9"
+
+
+def test_key_status_suffix_masked():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        worker = WorkerThread(mgr)
+        suffix = worker._key_status_suffix()
+        assert "1/2" in suffix
+        assert "test-key-1" not in suffix
+
+
+# ── Steady-state (mid-stream) FATAL failover ──────────────────────────
+
+def _make_midstream_clients(worker, reason, category):
+    """Build (client1, client2) mocks for a mid-stream FATAL test."""
+    from unittest.mock import AsyncMock, MagicMock
+    from voice_typing.errors import ErrorCategory as _Cat
+
+    cat = category
+    client1 = MagicMock()
+    client1.last_error_category = None
+    client1.last_error_reason = ""
+    client1.is_connected = True
+    client1.connect = AsyncMock(return_value=None)
+
+    def _fail_receive(*args, **kwargs):
+        client1.last_error_category = cat
+        client1.last_error_reason = reason
+        client1.is_connected = False
+        raise Exception(reason)
+
+    client1.receive_transcript = MagicMock(side_effect=_fail_receive)
+
+    client2 = MagicMock()
+    client2.last_error_category = None
+    client2.last_error_reason = ""
+    client2.is_connected = True
+    client2.connect = AsyncMock(return_value=None)
+
+    async def _stop_receive(*args, **kwargs):
+        worker._should_stop = True
+        return None
+
+    client2.receive_transcript = AsyncMock(side_effect=_stop_receive)
+    return client1, client2
+
+
+def test_midstream_rotatable_fatal_fails_over():
+    """Mid-stream 429 FATAL rotates to next key and reconnects (no fatal error)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        client1, client2 = _make_midstream_clients(
+            worker, "HTTP 429: Quota exceeded", ErrorCategory.FATAL
+        )
+        errors: list[str] = []
+        statuses: list[str] = []
+        worker._signals.error.connect(errors.append)
+        worker._signals.status.connect(statuses.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient", side_effect=[client1, client2]
+        ):
+            with patch.object(worker, "_sleep", return_value=False):
+                worker.run()
+
+        assert worker._key_pool.current_key == "test-key-2"
+        assert errors == []
+        assert any("next key" in s for s in statuses)
+
+
+def test_midstream_401_fatal_fails_over():
+    """Mid-stream 401 FATAL also rotates (per-key auth failure)."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        client1, client2 = _make_midstream_clients(
+            worker, "HTTP 401: API key invalid", ErrorCategory.FATAL
+        )
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient", side_effect=[client1, client2]
+        ):
+            with patch.object(worker, "_sleep", return_value=False):
+                worker.run()
+
+        assert worker._key_pool.current_key == "test-key-2"
+        assert errors == []
+
+
+def test_midstream_nonrotatable_fatal_does_not_rotate():
+    """Mid-stream 404 FATAL aborts without rotating or reconnecting."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1", "test-key-2"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        client1 = MagicMock()
+        client1.last_error_category = None
+        client1.last_error_reason = ""
+        client1.is_connected = True
+        client1.connect = AsyncMock(return_value=None)
+
+        def _fail_404(*args, **kwargs):
+            client1.last_error_category = ErrorCategory.FATAL
+            client1.last_error_reason = "HTTP 404: Model not found"
+            client1.is_connected = False
+            raise Exception("404 not found")
+
+        client1.receive_transcript = MagicMock(side_effect=_fail_404)
+
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient", return_value=client1
+        ) as factory:
+            with patch.object(worker, "_sleep", return_value=False):
+                worker.run()
+
+        assert factory.call_count == 1
+        assert len(errors) == 1
+        assert "Connection lost" in errors[0]
+        assert worker._key_pool.current_key == "test-key-1"
+        assert worker._key_pool.is_exhausted is False
+
+
+def test_midstream_exhausted_single_key_errors_without_reconnect():
+    """Mid-stream rotatable FATAL with all keys on cooldown → error + return.
+
+    Covers the is_exhausted branch (no _reconnect call, single error emit).
+    """
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from voice_typing.errors import ErrorCategory
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set_api_keys(["test-key-1"])
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._hotkey_mgr = MagicMock()
+        worker._hotkey_mgr.registration_failures.return_value = []
+        worker._should_stop = False
+
+        client1 = MagicMock()
+        client1.last_error_category = None
+        client1.last_error_reason = ""
+        client1.is_connected = True
+        client1.connect = AsyncMock(return_value=None)
+
+        def _fail_429(*args, **kwargs):
+            client1.last_error_category = ErrorCategory.FATAL
+            client1.last_error_reason = "HTTP 429: Quota exceeded"
+            client1.is_connected = False
+            raise Exception("429 quota exceeded")
+
+        client1.receive_transcript = MagicMock(side_effect=_fail_429)
+
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+
+        with patch(
+            "voice_typing.app.GeminiLiveClient", return_value=client1
+        ) as factory:
+            with patch.object(worker, "_sleep", return_value=False):
+                worker.run()
+
+        assert factory.call_count == 1  # no reconnect attempted
+        assert len(errors) == 1
+        assert "Connection lost" in errors[0]
+        assert worker._key_pool.is_exhausted is True

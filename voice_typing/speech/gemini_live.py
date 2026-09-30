@@ -88,6 +88,18 @@ class GeminiLiveClient:
         return self._connected
 
     @property
+    def api_key(self) -> str:
+        return self._api_key
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        self._api_key = value
+
+    def set_api_key(self, api_key: str) -> None:
+        """Re-key this client (used for per-attempt rotation without rebuild)."""
+        self._api_key = api_key
+
+    @property
     def last_error_category(self) -> ErrorCategory | None:
         return self._last_error_category
 

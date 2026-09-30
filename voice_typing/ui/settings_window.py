@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
 from voice_typing.audio.recorder import list_input_devices
 from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, VERSION, RELEASE_URL, get_asset_path
 from voice_typing.speech.gemini_live import MODEL, fetch_live_models
+from voice_typing.speech.key_pool import KeyPool
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
 
 
@@ -134,6 +137,9 @@ class SettingsWindow(QDialog):
         super().__init__(parent)
         self._settings = settings
         self._key_tester: _ApiKeyTester | None = None
+        self._test_all_tester: _ApiKeyTester | None = None
+        self._test_all_queue: list[str] = []
+        self._test_all_results: list[tuple[str, bool, str]] = []
         self._model_loader: _ModelLoader | None = None
         self._mic_tester: _LiveMicTester | None = None
         self._capturing_key = False
@@ -424,20 +430,52 @@ class SettingsWindow(QDialog):
         layout.setHorizontalSpacing(12)
         layout.setContentsMargins(12, 8, 12, 8)
 
-        self._api_key = QLineEdit()
-        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        # Multi-key list (masked display, full key in UserRole).
+        self._api_keys_list = QListWidget()
+        self._api_keys_list.setMaximumHeight(90)
+        layout.addRow("API Keys:", self._api_keys_list)
+
+        # Add row: new-key input + Add button.
+        self._api_key_input = QLineEdit()
+        self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_input.setPlaceholderText("Paste a new Gemini API key")
+        self._add_key_btn = QPushButton("Add")
+        self._add_key_btn.clicked.connect(self._add_api_key)
+        add_layout = QHBoxLayout()
+        add_layout.addWidget(self._api_key_input, 1)
+        add_layout.addWidget(self._add_key_btn)
+        layout.addRow("", add_layout)
+
+        # Backward compat: legacy single-field tests use ``_api_key``.
+        self._api_key = self._api_key_input
+
+        # Remove / Test / Test-All row + status dot.
         self._api_status = QLabel("● Not tested")
         self._api_status.setObjectName("api_status")
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
-        
+
         self._test_key_btn = QPushButton("Test Key")
         self._test_key_btn.clicked.connect(self._test_api_key)
+        self._test_all_btn = QPushButton("Test All")
+        self._test_all_btn.clicked.connect(self._test_all_keys)
+        self._remove_key_btn = QPushButton("Remove")
+        self._remove_key_btn.clicked.connect(self._remove_selected_api_key)
 
-        key_layout = QHBoxLayout()
-        key_layout.addWidget(self._api_key, 1)
-        key_layout.addWidget(self._api_status)
-        key_layout.addWidget(self._test_key_btn)
-        layout.addRow("API Key:", key_layout)
+        key_btn_layout = QHBoxLayout()
+        key_btn_layout.addWidget(self._api_status)
+        key_btn_layout.addStretch()
+        key_btn_layout.addWidget(self._test_key_btn)
+        key_btn_layout.addWidget(self._test_all_btn)
+        key_btn_layout.addWidget(self._remove_key_btn)
+        layout.addRow("", key_btn_layout)
+
+        self._quota_label = QLabel(
+            "Keys from same Google Cloud Project share quota — "
+            "use keys from different projects/accounts for failover."
+        )
+        self._quota_label.setWordWrap(True)
+        self._quota_label.setStyleSheet("color: #fbbc04; font-size: 10px;")
+        layout.addRow("", self._quota_label)
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(False)
@@ -581,9 +619,81 @@ class SettingsWindow(QDialog):
     def closeEvent(self, event) -> None:
         if self._capturing_key:
             self._cancel_key_capture()
-        if self._mic_tester is not None and self._mic_tester.isRunning():
-            self._mic_tester.stop()
-            self._mic_tester.wait(300)
+        if self._mic_tester is not None:
+            tester = self._mic_tester
+            for _sig in ("finished", "finished_test"):
+                try:
+                    getattr(tester, _sig).disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                except Exception:
+                    pass
+            try:
+                tester.stop()
+            except Exception:
+                pass
+            try:
+                if tester.isRunning():
+                    tester.wait(300)
+            except Exception:
+                pass
+            self._mic_tester = None
+            try:
+                self._test_mic_btn.setText("🎤 Test Mic")
+            except Exception:
+                pass
+            try:
+                self._mic_level_bar.setValue(0)
+            except Exception:
+                pass
+        # Abort any in-flight API-key test chain so no callback fires
+        # after close (offscreen-safe, no QMessageBox here).
+        self._test_all_queue = []
+        for _attr in ("_key_tester", "_test_all_tester"):
+            tester = getattr(self, _attr, None)
+            if tester is not None:
+                try:
+                    tester.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                except Exception:
+                    pass
+                try:
+                    if tester.isRunning():
+                        tester.wait(500)
+                except Exception:
+                    pass
+                setattr(self, _attr, None)
+        loader = getattr(self, "_model_loader", None)
+        if loader is not None:
+            for _sig in ("finished", "failed"):
+                try:
+                    getattr(loader, _sig).disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                except Exception:
+                    pass
+            try:
+                if loader.isRunning():
+                    loader.wait(500)
+            except Exception:
+                pass
+            self._model_loader = None
+        try:
+            self._load_models_btn.setEnabled(True)
+            self._load_models_btn.setText("Load models")
+        except Exception:
+            pass
+        try:
+            self._test_key_btn.setEnabled(True)
+            self._test_key_btn.setText("Test Key")
+        except Exception:
+            pass
+        try:
+            self._test_all_btn.setEnabled(True)
+            self._test_all_btn.setText("Test All")
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def _populate_ui_from_settings(self) -> None:
@@ -660,7 +770,20 @@ class SettingsWindow(QDialog):
         self._update_sensitivity_label(self._sensitivity_slider.value())
 
         # Gemini
-        self._api_key.setText(self._settings.get("api_key", ""))
+        get_keys = getattr(self._settings, "get_api_keys", None)
+        if callable(get_keys):
+            try:
+                stored_keys = list(get_keys())
+            except Exception:
+                stored_keys = []
+        else:
+            stored_keys = list(self._settings.get("api_keys", []) or [])
+        if not stored_keys:
+            legacy = self._settings.get("api_key", "") or ""
+            if isinstance(legacy, str) and legacy.strip():
+                stored_keys = [legacy.strip()]
+        self._refresh_keys_list(stored_keys)
+        self._api_key_input.clear()
         self._api_status.setText("\u25cf Not tested")
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
 
@@ -756,8 +879,77 @@ class SettingsWindow(QDialog):
                 return
         super().keyPressEvent(event)
 
+    # -- Multi-key helpers -------------------------------------------------
+    def _refresh_keys_list(self, keys: list[str]) -> None:
+        self._api_keys_list.clear()
+        for k in KeyPool.normalize_keys(keys):
+            item = QListWidgetItem(KeyPool.mask(k))
+            item.setData(Qt.ItemDataRole.UserRole, k)
+            self._api_keys_list.addItem(item)
+
+    def _collect_keys_from_ui(self) -> list[str]:
+        keys: list[str] = []
+        for i in range(self._api_keys_list.count()):
+            item = self._api_keys_list.item(i)
+            if item is None:
+                continue
+            full = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(full, str) and full.strip():
+                keys.append(full.strip())
+        # Include un-added input text so legacy single-field flows still save.
+        pending = self._api_key_input.text().strip()
+        if pending and pending not in keys:
+            keys.append(pending)
+        return KeyPool.normalize_keys(keys)
+
+    def _selected_or_first_key(self) -> str:
+        selected = self._api_keys_list.selectedItems()
+        if selected:
+            full = selected[0].data(Qt.ItemDataRole.UserRole)
+            if isinstance(full, str) and full.strip():
+                return full.strip()
+        for i in range(self._api_keys_list.count()):
+            item = self._api_keys_list.item(i)
+            if item is not None:
+                full = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(full, str) and full.strip():
+                    return full.strip()
+        return ""
+
+    def _effective_single_key(self) -> str:
+        typed = self._api_key_input.text().strip()
+        if typed:
+            return typed
+        return self._selected_or_first_key()
+
+    def _add_api_key(self) -> None:
+        raw = self._api_key_input.text().strip()
+        if not raw:
+            return
+        normalized = self._collect_keys_from_ui()
+        self._refresh_keys_list(normalized)
+        # Keep selection on the newly added key.
+        for i in range(self._api_keys_list.count()):
+            item = self._api_keys_list.item(i)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == raw:
+                self._api_keys_list.setCurrentRow(i)
+                break
+        self._api_key_input.clear()
+
+    def _remove_selected_api_key(self) -> None:
+        selected = self._api_keys_list.selectedItems()
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Select an API key to remove.")
+            return
+        for item in selected:
+            # takeItem() transfers ownership to the caller; in PySide6 the
+            # returned wrapper must be released (no deleteLater — QListWidgetItem
+            # is not a QObject) or the C++ item leaks.
+            taken = self._api_keys_list.takeItem(self._api_keys_list.row(item))
+            del taken
+
     def _test_api_key(self) -> None:
-        api_key = self._api_key.text().strip()
+        api_key = self._effective_single_key()
         if not api_key:
             QMessageBox.warning(self, "API Key Required", "Enter an API Key to test.")
             return
@@ -773,6 +965,7 @@ class SettingsWindow(QDialog):
     def _on_api_key_tested(self, success: bool, msg: str) -> None:
         self._test_key_btn.setEnabled(True)
         self._test_key_btn.setText("Test Key")
+        self._key_tester = None
         if success:
             self._api_status.setText("\u25cf Valid")
             self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
@@ -782,8 +975,62 @@ class SettingsWindow(QDialog):
             self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
             QMessageBox.warning(self, "API Key Test", msg)
 
+    def _test_all_keys(self) -> None:
+        keys = self._collect_keys_from_ui()
+        if not keys:
+            QMessageBox.warning(self, "API Key Required", "Add at least one API Key to test.")
+            return
+        self._test_all_queue = list(keys)
+        self._test_all_results = []
+        self._test_all_btn.setEnabled(False)
+        self._test_all_btn.setText("Testing...")
+        self._api_status.setText("\u25cf Testing...")
+        self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
+        self._test_next_key()
+
+    def _test_next_key(self) -> None:
+        if not self._test_all_queue:
+            self._test_all_tester = None
+            self._finish_test_all()
+            return
+        key = self._test_all_queue[0]
+        tester = _ApiKeyTester(key)
+        tester.finished.connect(self._on_test_all_key_finished)
+        tester.start()
+        self._test_all_tester = tester
+
+    def _on_test_all_key_finished(self, success: bool, msg: str) -> None:
+        key = self._test_all_queue.pop(0) if self._test_all_queue else ""
+        self._test_all_results.append((key, success, msg))
+        self._test_next_key()
+
+    def _finish_test_all(self) -> None:
+        self._test_all_tester = None
+        self._test_all_btn.setEnabled(True)
+        self._test_all_btn.setText("Test All")
+        ok = sum(1 for _, s, _ in self._test_all_results if s)
+        total = len(self._test_all_results)
+        if total and ok == total:
+            self._api_status.setText("\u25cf Valid")
+            self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
+        elif ok:
+            self._api_status.setText("\u25cf Partial")
+            self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
+        else:
+            self._api_status.setText("\u25cf Invalid")
+            self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
+        lines = [
+            f"{KeyPool.mask(k)}: {'OK' if s else 'FAIL'}"
+            for k, s, _ in self._test_all_results
+        ]
+        summary = f"{ok}/{total} keys valid.\n" + "\n".join(lines)
+        if ok == total:
+            QMessageBox.information(self, "API Key Test", summary)
+        else:
+            QMessageBox.warning(self, "API Key Test", summary)
+
     def _load_models(self) -> None:
-        api_key = self._api_key.text().strip()
+        api_key = self._effective_single_key()
         if not api_key:
             QMessageBox.warning(
                 self, "API Key Required", "Enter your Gemini API key first."
@@ -827,7 +1074,7 @@ class SettingsWindow(QDialog):
         )
         if reply == QMessageBox.StandardButton.Yes:
             for k, v in DEFAULT_SETTINGS.items():
-                self._settings.set(k, v)
+                self._settings.set(k, list(v) if isinstance(v, list) else v)
             self._populate_ui_from_settings()
             QMessageBox.information(self, "Done", "Settings have been reset to defaults.")
 
@@ -844,7 +1091,13 @@ class SettingsWindow(QDialog):
         self._settings.set("microphone_device_id", self._mic_combo.currentData())
         self._settings.set("typing_speed", self._speed_slider.value())
         self._settings.set("silence_threshold", self._sensitivity_slider.value() / 1000.0)
-        self._settings.set("api_key", self._api_key.text().strip())
+        keys = self._collect_keys_from_ui()
+        set_keys = getattr(self._settings, "set_api_keys", None)
+        if callable(set_keys):
+            set_keys(keys)
+        else:
+            self._settings.set("api_keys", list(keys))
+            self._settings.set("api_key", keys[0] if keys else "")
         model_data = self._model_combo.currentData()
         if model_data is None:
             model_data = self._model_combo.currentText()

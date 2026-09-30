@@ -89,6 +89,53 @@ def classify_http_status(code: int, context: str = "HTTP") -> tuple[ErrorCategor
     return ErrorCategory.RETRY, f"{context} {code}: Unexpected status code"
 
 
+def should_rotate_on_error(category: ErrorCategory | None, reason: str | None) -> bool:
+    """Return True when the error suggests trying the *next* API key.
+
+    Rotatable (per-key problem → fail over):
+      - 429 / quota / resource_exhausted / rate limit
+      - 401 / 403 / invalid-key (key rejected while others may work)
+
+    Non-rotatable (same outcome for every key → do not rotate):
+      - 404 / model-not-found, 400 / bad-request, 5xx / network errors.
+    """
+    lower = (reason or "").lower()
+    # Non-rotatable problems first: trying another key cannot help.
+    if "404" in lower or "not found" in lower:
+        return False
+    if "400" in lower or "bad request" in lower:
+        return False
+    quota_markers = (
+        "429",
+        "quota",
+        "resource_exhausted",
+        "resource exhausted",
+        "resource-exhausted",
+        "rate limit",
+        "rate-limit",
+        "rate_limit",
+        "too many requests",
+    )
+    if any(m in lower for m in quota_markers):
+        return True
+    auth_markers = (
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "api key",
+        "api-key",
+        "api_key",
+        "invalid key",
+        "invalid-key",
+        "lacks permission",
+        "permission denied",
+    )
+    if any(m in lower for m in auth_markers):
+        return True
+    return False
+
+
 def _extract_status_code(msg: str) -> int | None:
     """Try to pull an HTTP status code number out of an error message.
 
