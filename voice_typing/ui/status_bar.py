@@ -242,6 +242,7 @@ class StatusBar:
         self._status_label: QLabel | None = None
         self._menu_button: QPushButton | None = None
         self._tray_btn: QPushButton | None = None
+        self._row: QHBoxLayout | None = None
         self._recording = False
         self._hovered = False
         self._level = 0.0
@@ -305,16 +306,35 @@ class StatusBar:
             self._status_label.setText(f"{self._hotkey_name}")
 
     def _make_mic_pixmap(self, color: str) -> QPixmap:
-        pixmap = QPixmap(18, 18)
+        # Logical icon size stays 18x18; physical pixels scale with DPR so
+        # the glyph stays crisp (and centered) on HiDPI displays.
+        logical = 18
+        dpr = 1.0
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                screen = app.primaryScreen()
+                if screen is not None:
+                    dpr = float(screen.devicePixelRatio() or 1.0)
+            except Exception:
+                dpr = 1.0
+        if dpr < 1.0:
+            dpr = 1.0
+        pixmap = QPixmap(max(1, round(logical * dpr)), max(1, round(logical * dpr)))
+        pixmap.setDevicePixelRatio(dpr)
         transparent = QColor(Qt.GlobalColor.transparent)
         pixmap.fill(transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if dpr != 1.0:
+            painter.scale(dpr, dpr)
         painter.setPen(QPen(QColor(color), 1.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(5, 6, 8, 8, 0, -180 * 16)
-        painter.drawLine(9, 13, 9, 16)
-        painter.drawLine(6, 16, 12, 16)
+        # Stem + base sit 1px higher than before so the glyph bounding box
+        # (y 2..15) is vertically centered in the 18px pixmap (margins 2/2).
+        painter.drawLine(9, 12, 9, 15)
+        painter.drawLine(6, 15, 12, 15)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(color))
         painter.drawRoundedRect(7, 2, 4, 7, 2, 2)
@@ -405,6 +425,7 @@ class StatusBar:
         row.addStretch(1)
         row.addWidget(self._tray_btn)
         row.addWidget(self._menu_button)
+        self._row = row
 
         root = QVBoxLayout(win)
         root.setContentsMargins(0, 0, 0, 0)
@@ -484,6 +505,16 @@ class StatusBar:
             self._menu_button.setVisible(should_expand)
         if self._tray_btn is not None:
             self._tray_btn.setVisible(should_expand)
+
+        # Dot mode shows only the 28px mic in a 38px capsule. The QFrame
+        # carries 1px contents margins on each side, so row margins of 4
+        # (1+4+28+4+1=38) keep the button exactly centered; pill mode
+        # keeps the roomier 6/8 margins.
+        if self._row is not None:
+            if should_expand:
+                self._row.setContentsMargins(6, 0, 8, 0)
+            else:
+                self._row.setContentsMargins(4, 0, 4, 0)
 
         self._animate_width(target_width)
 
@@ -574,6 +605,7 @@ class StatusBar:
             self._status_label = None
             self._menu_button = None
             self._tray_btn = None
+            self._row = None
 
     def show(self) -> None:
         if self._window is None:

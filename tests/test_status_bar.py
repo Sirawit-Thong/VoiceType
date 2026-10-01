@@ -272,3 +272,67 @@ def test_no_runtime_asserts_in_status_bar():
     # m6: geometry parity is verified by tests, never by runtime assert.
     assert "\nassert " not in text
     assert "\n    assert " not in text
+
+
+def _glyph_bbox_center(pixmap):
+    """Return (bbox_cx, bbox_cy, center, tol_scale) in physical pixels."""
+    from PySide6.QtGui import QImage
+
+    img = pixmap.toImage().convertToFormat(QImage.Format_ARGB32)
+    w, h = img.width(), img.height()
+    minx, miny, maxx, maxy = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            if img.pixelColor(x, y).alpha() > 10:
+                if x < minx:
+                    minx = x
+                if x > maxx:
+                    maxx = x
+                if y < miny:
+                    miny = y
+                if y > maxy:
+                    maxy = y
+    assert maxx >= minx and maxy >= miny, "mic pixmap has no visible glyph"
+    return (minx + maxx) / 2.0, (miny + maxy) / 2.0, (w - 1) / 2.0, (h - 1) / 2.0
+
+
+def test_mic_glyph_optically_centered(bar):
+    # No hardcoded colors: reuse the bar's current theme-driven state color.
+    pix = bar._make_mic_pixmap(bar._state_color)
+    dpr = pix.devicePixelRatio() or 1.0
+    bx, by, cx, cy = _glyph_bbox_center(pix)
+    assert abs(bx - cx) <= 1.0 * dpr
+    assert abs(by - cy) <= 1.0 * dpr
+
+
+def test_mic_glyph_centered_all_states(bar):
+    for state in ("idle", "listening", "processing", "reconnecting", "error-dead"):
+        bar.set_state(state)
+        pix = bar._make_mic_pixmap(bar._state_color)
+        dpr = pix.devicePixelRatio() or 1.0
+        bx, by, cx, cy = _glyph_bbox_center(pix)
+        assert abs(bx - cx) <= 1.0 * dpr, state
+        assert abs(by - cy) <= 1.0 * dpr, state
+
+
+def test_dot_mode_mic_centered_and_pill_vertically_centered(bar):
+    bar.set_style("dot")
+    QTest.qWait(300)
+    QApplication.processEvents()
+    assert bar._window.width() == StatusBar.COLLAPSED_WIDTH
+    mg = bar._mic_button.geometry()
+    mic_cx = mg.x() + mg.width() / 2.0
+    mic_cy = mg.y() + mg.height() / 2.0
+    assert abs(mic_cx - bar._capsule.width() / 2.0) <= 1.0
+    assert abs(mic_cy - bar._capsule.height() / 2.0) <= 1.0
+
+    bar.set_style("pill")
+    QTest.qWait(300)
+    QApplication.processEvents()
+    assert bar._window.width() == StatusBar.EXPANDED_WIDTH
+    mg = bar._mic_button.geometry()
+    mic_cy = mg.y() + mg.height() / 2.0
+    assert abs(mic_cy - bar._capsule.height() / 2.0) <= 1.0
+    # Icon itself stays centered inside the 28px touch target.
+    assert bar._mic_button.iconSize().width() == 18
+    assert bar._mic_button.iconSize().height() == 18
