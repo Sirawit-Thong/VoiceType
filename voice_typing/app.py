@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal, QObject
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from voice_typing.ai.text_normalize import normalize_transcript
 from voice_typing.ai.text_processor import TextProcessor
@@ -28,8 +28,10 @@ from voice_typing.speech.gemini_live import GeminiLiveClient, MODEL
 from voice_typing.speech.key_pool import KeyPool
 from voice_typing.ui.settings_window import SettingsWindow
 from voice_typing.ui.status_bar import StatusBar
+from voice_typing.ui.toast import ToastManager
 from voice_typing.ui.transcript_overlay import TranscriptOverlay
 from voice_typing.ui.tray import TrayIcon
+from voice_typing.ui._theme import RECONNECT_HINTS, TRANSIENT_ERROR_HINTS
 from voice_typing.windows.hotkey import HotkeyManager, hotkey_name
 from voice_typing.windows.startup import set_startup
 from voice_typing.windows.text_injector import TextInjector, auto_space
@@ -40,6 +42,16 @@ DEFAULT_HOTKEY = 0x78  # VK_F9
 ERROR_ALREADY_EXISTS = 183
 MAX_HISTORY = 20
 SILENCE_THRESHOLD = 0.005
+# UX Phase B: error substrings routed to a transient toast instead of a
+# sticky persistent one (mic/inject failures are one-off nudges; every
+# other error — connection/key/quota/model — stays persistent).
+# Single source lives in ui._theme (TRANSIENT_ERROR_HINTS); this alias
+# keeps the local name for routing without duplicating the tuple.
+# "inject" subsumes "injection failed". Capsule/tray decision (Phase B
+# reviewer #4): transient → processing (amber-yellow, mic stays enabled)
+# + amber tray dot + transient toast; persistent → error-dead (gray) +
+# gray tray dot + persistent toast.
+_TRANSIENT_ERROR_HINTS = TRANSIENT_ERROR_HINTS
 _mutex_handle = None
 
 
@@ -62,6 +74,7 @@ def _release_single_instance() -> None:
 
 class WorkerSignals(QObject):
     partial_received = Signal(str)
+    final_received = Signal(str)
     recording_started = Signal()
     recording_stopped = Signal()
     error = Signal(str)
@@ -137,8 +150,15 @@ class WorkerThread(QThread):
             return ""
 
     def _on_audio_chunk(self, audio_bytes: bytes) -> None:
-        if self._recording:
-            self._update_audio_level(audio_bytes)
+        # UX Phase A: emit a level update for each received chunk so the
+        # level meter stays alive while audio flows. The send-audio gate
+        # below stays intact (only forwards when connected). Note: the
+        # AudioRecorder only runs while recording/connected, so idle gets
+        # no chunks — there is no always-on capture stream (out of scope).
+        # Hotkey _pending_record queue semantics are unchanged: a disabled
+        # mic button never blocks the hotkey path, which queues via
+        # _start_recording().
+        self._update_audio_level(audio_bytes)
         client = self._client
         loop = self._loop
         if client is not None and client.is_connected and loop is not None:
@@ -359,6 +379,9 @@ class WorkerThread(QThread):
     def _finalize_and_inject(self, keep_recording: bool = False) -> None:
         with self._lock:
             if not self._recording:
+                # Push-to-talk release while idle/reconnecting: cancel any
+                # queued _pending_record so release never auto-starts later.
+                self._pending_record = False
                 return
             if not keep_recording:
                 self._recorder.stop()
@@ -403,6 +426,15 @@ class WorkerThread(QThread):
     def _on_final(self, text: str) -> None:
         if text:
             self._buffer.add_partial(text)
+        # B1: finals must reach the overlay (previously only partials were
+        # wired). Emit the raw final text for overlay display only — the
+        # inject path below is unchanged, so there is no double inject.
+        final_text = text if text else self._buffer.current
+        if final_text:
+            try:
+                self._signals.final_received.emit(final_text)
+            except Exception:
+                pass
         self._finalize_and_inject(
             keep_recording=(
                 self._settings.get("mode", "push_to_talk") == "push_to_talk"
@@ -418,6 +450,7 @@ class WorkerThread(QThread):
     def stop(self) -> None:
         self._should_stop = True
         with self._lock:
+            self._pending_record = False
             if self._recording:
                 try:
                     self._recorder.stop()
@@ -878,6 +911,9 @@ class VoiceTypeApp:
         self._settings_win: SettingsWindow | None = None
         self._worker: WorkerThread | None = None
         self._mic_tester: _MicTester | None = None
+        # UX Phase B: single toast instance owned by the app. The
+        # open_settings action routes to _open_settings (connected in run()).
+        self._toast = ToastManager()
         self._overlay = TranscriptOverlay()
         # Apply overlay settings on startup
         self._overlay.set_enabled(self._settings.get("overlay_enabled", True))
@@ -887,19 +923,32 @@ class VoiceTypeApp:
         self._overlay.set_auto_dismiss_seconds(
             self._settings.get("overlay_auto_dismiss_seconds", 3)
         )
+        # UX Phase C: restore pin + geometry (clamped to available screen),
+        # then wire overlay signals for persistence and actions.
+        self._overlay.set_pinned(bool(self._settings.get("overlay_pinned", False)))
+        self._restore_overlay_geometry()
+        self._overlay.signals.geometry_changed.connect(
+            self._on_overlay_geometry_changed
+        )
+        self._overlay.signals.pin_toggled.connect(self._on_overlay_pin_toggled)
+        self._overlay.signals.copy_clicked.connect(self._on_overlay_copy_clicked)
+        self._overlay.signals.edit_committed.connect(
+            self._on_overlay_edit_committed
+        )
 
     def run(self) -> int:
         self._tray.signals.start_recording.connect(self._start_recording)
         self._tray.signals.stop_recording.connect(self._stop_recording)
         self._tray.signals.open_settings.connect(self._open_settings)
+        self._tray.signals.open_history.connect(self._open_history_in_settings)
         self._tray.signals.exit_app.connect(self._exit)
         self._tray.signals.mode_changed.connect(self._on_mode_changed)
         self._tray.signals.language_changed.connect(self._on_language_changed)
-        self._tray.signals.fast_mode_toggled.connect(self._on_fast_mode_toggled)
         self._tray.signals.clear_history.connect(self._on_clear_history)
         self._tray.signals.test_microphone.connect(self._on_test_microphone)
         self._tray.signals.re_inject.connect(self._on_re_inject)
         self._tray.signals.show_status_bar.connect(self._status_bar.show)
+        self._toast.signals.open_settings.connect(self._open_settings)
         self._status_bar.signals.start_recording.connect(self._start_recording)
         self._status_bar.signals.stop_recording.connect(self._stop_recording)
         self._status_bar.signals.open_settings.connect(self._open_settings)
@@ -910,7 +959,6 @@ class VoiceTypeApp:
         self._run_setup_wizard()
         self._tray.set_language(self._settings.get("language", "auto"))
         self._status_bar.set_language(self._settings.get("language", "auto"))
-        self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         self._status_bar.set_overlay_enabled(self._settings.get("overlay_enabled", True))
         self._tray.show()
         # Don't show status bar on startup — only tray icon visible
@@ -947,6 +995,7 @@ class VoiceTypeApp:
                 self._worker._signals.recording_started,
                 self._worker._signals.recording_stopped,
                 self._worker._signals.partial_received,
+                self._worker._signals.final_received,
                 self._worker._signals.error,
                 self._worker._signals.status,
                 self._worker._signals.audio_level,
@@ -962,11 +1011,22 @@ class VoiceTypeApp:
         self._worker._signals.recording_stopped.connect(self._on_recording_stopped)
         self._worker._signals.partial_received.connect(self._on_partial)
         self._worker._signals.partial_received.connect(self._overlay.add_partial)
+        self._worker._signals.final_received.connect(self._overlay.add_final)
         self._worker._signals.error.connect(self._on_error)
         self._worker._signals.status.connect(self._on_status)
         self._worker._signals.audio_level.connect(self._status_bar.set_level)
-        self._worker._signals.history_changed.connect(self._tray.set_history)
+        self._worker._signals.history_changed.connect(self._on_history_changed)
         self._worker.start()
+
+    def _on_history_changed(self, items: list) -> None:
+        """Forward worker history to the tray shim + open settings panel."""
+        self._tray.set_history(list(items))
+        win = self._settings_win
+        if win is not None:
+            try:
+                win.history_panel.set_history(list(items))
+            except Exception:
+                pass
 
     def _on_re_inject(self, text: str) -> None:
         worker = self._worker
@@ -980,6 +1040,8 @@ class VoiceTypeApp:
     def _on_recording_started(self) -> None:
         self._tray.update_recording_state(True)
         self._status_bar.update_recording_state(True)
+        # A successful start clears any sticky error (dismiss policy).
+        self._toast.hide()
         if self._settings.get("show_status_bar", True):
             self._status_bar.show()
         self._status_bar.set_state("listening", "Listening...")
@@ -999,16 +1061,50 @@ class VoiceTypeApp:
         self._status_bar.set_state("listening", text)
 
     def _on_error(self, msg: str) -> None:
+        # UX Phase B toast/capsule/tray policy (decided, reviewer #4):
+        # - persistent (connection/key/quota/model): sticky toast
+        #   (persistent + Open Settings action) because they need user
+        #   action; capsule error-dead (gray) + tray dot gray. Dismissed
+        #   by Reconnected status, user Dismiss click, or next successful
+        #   recording start.
+        # - transient (mic/inject one-off nudges): auto-dismiss toast AND
+        #   capsule processing (amber-yellow, mic stays enabled — unlike
+        #   reconnecting/error-dead which disable the mic button) + tray
+        #   dot amber (via TRANSIENT_ERROR_HINTS in tray.status_dot_color),
+        #   so a single blip never looks permanently dead.
         self._status_bar.show()
-        self._status_bar.set_state("error", msg)
-        self._tray.set_status("Error")
+        low = (msg or "").lower()
+        if any(h in low for h in _TRANSIENT_ERROR_HINTS):
+            self._status_bar.set_state("processing", msg)
+            self._tray.set_status(msg)
+            self._toast.show_transient(msg)
+        else:
+            self._status_bar.set_state("error-dead", msg)
+            self._tray.set_status("Error")
+            self._toast.show_persistent(msg)
 
     def _on_status(self, msg: str) -> None:
-        low = (msg or "").lower()
-        if low.startswith("reconnecting"):
+        low = (msg or "").lower().strip()
+        # Reconnecting hints (single source: ui._theme.RECONNECT_HINTS)
+        # cover every status string emitted mid-reconnect:
+        # "Connection lost - reconnecting...", "Reconnecting... (attempt x/y)",
+        # "Reconnect attempt x of y failed - trying next key/retrying",
+        # "Key failed, trying next key...", "Reconnecting — will start...",
+        # plus the 5xx retryable-idle "Server busy, ready to retry — ...".
+        # "reconnected" (success) is checked first so it stays idle green.
+        # Server-busy maps to amber reconnecting (not green idle) so the
+        # retryable state is visibly non-healthy; its transient toast matches
+        # other reconnecting states.
+        if "reconnected" in low:
+            self._status_bar.set_state("idle", msg)
+            # Reconnected clears any toast (dismiss policy).
+            self._toast.hide()
+        elif any(h in low for h in RECONNECT_HINTS):
             self._status_bar.set_state("reconnecting", msg)
+            # Reconnect attempts surface as transient toasts (amber state).
+            self._toast.show_transient(msg)
         else:
-            self._status_bar.set_state("ready", msg)
+            self._status_bar.set_state("idle", msg)
         self._tray.set_status(msg)
 
     def _on_test_microphone(self) -> None:
@@ -1027,6 +1123,74 @@ class VoiceTypeApp:
         self._settings.set("overlay_enabled", new_state)
         self._settings.save()
         self._status_bar.set_overlay_enabled(new_state)
+
+    def _restore_overlay_geometry(self) -> None:
+        """Apply saved overlay geometry, clamped to the available screen."""
+        x = self._settings.get("overlay_x")
+        y = self._settings.get("overlay_y")
+        w = self._settings.get("overlay_width", 450)
+        h = self._settings.get("overlay_height", 200)
+        if not isinstance(w, int):
+            w = 450
+        if not isinstance(h, int):
+            h = 200
+        w = max(300, min(800, w))
+        h = max(100, min(600, h))
+        if isinstance(x, int) and isinstance(y, int):
+            try:
+                from PySide6.QtWidgets import QApplication as _QApp
+
+                screen = _QApp.primaryScreen()
+                if screen is not None:
+                    avail = screen.availableGeometry()
+                    x = max(avail.x(), min(x, avail.x() + avail.width() - 100))
+                    y = max(avail.y(), min(y, avail.y() + avail.height() - 50))
+            except Exception:
+                pass
+        else:
+            x, y = None, None
+        self._overlay.set_geometry_from_settings(x, y, w, h)
+
+    def _on_overlay_geometry_changed(
+        self, x: int, y: int, w: int, h: int
+    ) -> None:
+        self._settings.set("overlay_x", int(x))
+        self._settings.set("overlay_y", int(y))
+        self._settings.set("overlay_width", int(w))
+        self._settings.set("overlay_height", int(h))
+        self._settings.save()
+
+    def _on_overlay_pin_toggled(self, pinned: bool) -> None:
+        self._settings.set("overlay_pinned", bool(pinned))
+        self._settings.save()
+
+    def _on_overlay_copy_clicked(self) -> None:
+        # M5: overlay owns the clipboard write (copy_to_clipboard writes +
+        # returns text). The app handler only delegates — no duplicate
+        # setText here (previously wrote twice).
+        try:
+            self._overlay.copy_to_clipboard()
+        except Exception:
+            pass
+
+    def _on_overlay_edit_committed(self, text: str) -> None:
+        # Edit replaces finals in the overlay (already applied by the
+        # overlay) and injects exactly once: reset the live buffer so a
+        # later finalize cannot re-inject stale text (no double inject).
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        worker = self._worker
+        if worker is None:
+            return
+        try:
+            worker._buffer.reset()
+        except Exception:
+            pass
+        try:
+            worker._inject(cleaned)
+        except Exception:
+            pass
 
     def _on_mic_test_result(self, success: bool, msg: str) -> None:
         if success:
@@ -1052,22 +1216,70 @@ class VoiceTypeApp:
         if self._worker is not None and self._worker.isRunning():
             self._worker.update_settings()
 
-    def _on_fast_mode_toggled(self, fast: bool) -> None:
-        self._settings.set("fast_mode", fast)
-        self._settings.save()
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.update_settings()
-
     def _on_clear_history(self) -> None:
+        # M2 decision: confirm lives here (app handler), not in HistoryPanel,
+        # so both destructive paths — Settings "Clear History" button (via
+        # HistoryPanel.clear_history) and tray clear — share one confirm.
+        # HistoryPanel keeps its signal flow unchanged (emits clear_history).
+        try:
+            count = len(self._worker._history) if self._worker is not None else 0
+        except Exception:
+            count = 0
+        if count <= 0:
+            try:
+                count = len(self._tray._history)
+            except Exception:
+                count = 0
+        parent = self._settings_win if self._settings_win is not None else None
+        reply = QMessageBox.question(
+            parent,
+            "Clear History",
+            f"Clear all {count} dictations? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         if self._worker is not None:
             self._worker._history.clear()
             self._worker._save_history()
         self._tray.set_history([])
+        win = self._settings_win
+        if win is not None:
+            try:
+                win.history_panel.set_history([])
+            except Exception:
+                pass
 
-    def _open_settings(self) -> None:
+    def _open_history_in_settings(self) -> None:
+        self._open_settings(page="History")
+
+    def _open_settings(self, page: str | None = None) -> None:
         if self._settings_win is None:
             self._settings_win = SettingsWindow(self._settings)
             self._settings_win.saved.connect(self._on_settings_saved)
+            # History round-trip: worker -> panel, panel actions -> handlers.
+            # M3: single forward path via _on_history_changed (tray shim +
+            # open panel). No direct history_changed -> set_history connect
+            # here — that doubled set_history calls per emit.
+            try:
+                if self._worker is not None:
+                    self._settings_win.history_panel.set_history(
+                        list(self._worker._history)
+                    )
+                self._settings_win.history_panel.re_inject.connect(
+                    self._on_re_inject
+                )
+                self._settings_win.history_panel.clear_history.connect(
+                    self._on_clear_history
+                )
+            except Exception:
+                pass
+            if page:
+                try:
+                    self._settings_win.select_page(page)
+                except Exception:
+                    pass
         self._settings_win.exec()
         self._settings_win = None
 
@@ -1080,7 +1292,6 @@ class VoiceTypeApp:
         self._status_bar.set_language(self._settings.get("language", "auto"))
         self._tray.set_mode(self._settings.get("mode", "push_to_talk"))
         self._tray.set_language(self._settings.get("language", "auto"))
-        self._tray.set_fast_mode(self._settings.get("fast_mode", True))
         # Propagate overlay settings
         self._overlay.set_enabled(self._settings.get("overlay_enabled", True))
         self._overlay.set_opacity(self._settings.get("overlay_opacity", 0.92))
@@ -1089,6 +1300,8 @@ class VoiceTypeApp:
         self._overlay.set_auto_dismiss_seconds(
             self._settings.get("overlay_auto_dismiss_seconds", 3)
         )
+        self._overlay.set_pinned(bool(self._settings.get("overlay_pinned", False)))
+        self._restore_overlay_geometry()
         if self._worker is not None and self._worker.isRunning():
             self._worker.reconfigure_hotkey()
             self._worker.update_settings()
@@ -1102,26 +1315,39 @@ class VoiceTypeApp:
 
 
     def _run_setup_wizard(self) -> None:
+        # Trigger unchanged (Phase D decision): only when no non-blank key.
         get_keys = getattr(self._settings, "get_api_keys", None)
         existing = get_keys() if callable(get_keys) else [self._settings.get("api_key", "")]
         if any(k.strip() for k in existing if isinstance(k, str)):
             return
-        api_key, ok = QInputDialog.getText(
-            None, "VoiceType Setup", "Enter your Gemini API Key:"
-        )
-        if ok and api_key.strip():
-            set_keys = getattr(self._settings, "set_api_keys", None)
-            if callable(set_keys):
-                set_keys([api_key.strip()])
-            else:
-                self._settings.set("api_key", api_key.strip())
-            self._settings.save()
-        else:
+        from voice_typing.ui.setup_wizard import SetupWizard
+
+        wiz = SetupWizard(None)
+        if wiz.exec() != QDialog.DialogCode.Accepted:
             QMessageBox.warning(
                 None,
                 "VoiceType Setup",
                 "No API key entered. You can configure it later in Settings.",
             )
+            return
+        keys = wiz.keys()
+        if not keys:
+            QMessageBox.warning(
+                None,
+                "VoiceType Setup",
+                "No API key entered. You can configure it later in Settings.",
+            )
+            return
+        set_keys = getattr(self._settings, "set_api_keys", None)
+        if callable(set_keys):
+            set_keys(keys)
+        else:
+            self._settings.set("api_keys", list(keys))
+            self._settings.set("api_key", keys[0])
+        self._settings.set("language", wiz.language())
+        self._settings.set("hotkey", wiz.hotkey())
+        self._settings.set("microphone_device_id", wiz.microphone_device_id())
+        self._settings.save()
 
     def _exit(self) -> None:
         try:
@@ -1133,6 +1359,7 @@ class VoiceTypeApp:
                 self._mic_tester.terminate()
             if self._settings_win is not None:
                 self._settings_win.close()
+            self._toast.close()
             self._overlay.close()
             self._status_bar.close()
             self._tray.hide()

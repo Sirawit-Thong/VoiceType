@@ -394,7 +394,8 @@ def test_app_on_settings_saved():
 
 def test_app_tray_event_handlers():
     from voice_typing.app import VoiceTypeApp
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
+    from PySide6.QtWidgets import QMessageBox
 
     app = VoiceTypeApp()
     app._worker = MagicMock()
@@ -406,12 +407,11 @@ def test_app_tray_event_handlers():
     assert app._settings.get("language") == "thai"
     app._worker.update_settings.assert_called_once()
 
-    app._worker.update_settings.reset_mock()
-    app._on_fast_mode_toggled(False)
-    assert app._settings.get("fast_mode") is False
-    app._worker.update_settings.assert_called_once()
-
-    app._on_clear_history()
+    with patch.object(
+        QMessageBox, "question",
+        return_value=QMessageBox.StandardButton.Yes,
+    ):
+        app._on_clear_history()
     assert len(app._worker._history) == 0
     app._tray.set_history.assert_called_once_with([])
 
@@ -1484,7 +1484,7 @@ def test_5xx_exhaustion_stays_retryable_no_permanent_dead():
 
 
 def test_status_bar_reconnecting_state_color():
-    """StatusBar reconnecting state is yellow #fbbc04 (offscreen)."""
+    """StatusBar reconnecting state is distinct amber #fb8c00 (offscreen)."""
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
@@ -1495,8 +1495,9 @@ def test_status_bar_reconnecting_state_color():
         app = QApplication([])
     bar = StatusBar()
     bar.set_state("reconnecting", "Reconnecting... (attempt 1/5)")
-    assert bar._state_color == "#fbbc04"
+    assert bar._state_color == "#fb8c00"
     bar.set_state("error", "oops")
+    assert bar._state == "error-dead"
     assert bar._state_color == "#9aa0a6"
 
 
@@ -1516,5 +1517,898 @@ def test_on_status_routes_reconnecting():
         app._status_bar.set_state.reset_mock()
         app._on_status("Reconnected to Gemini Live")
         app._status_bar.set_state.assert_called_once_with(
-            "ready", "Reconnected to Gemini Live"
+            "idle", "Reconnected to Gemini Live"
         )
+
+
+# ── UX Phase A: routing + idle level emit ────────────────────────────
+
+def test_on_error_routes_to_error_dead():
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        app._on_error("boom")
+        app._status_bar.set_state.assert_called_once_with("error-dead", "boom")
+
+
+def test_on_status_idle_fallback():
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        # 5xx retryable-idle maps to amber reconnecting (not green idle).
+        app._on_status("Server busy, ready to retry - press hotkey again")
+        app._status_bar.set_state.assert_called_once_with(
+            "reconnecting", "Server busy, ready to retry - press hotkey again"
+        )
+        app._status_bar.set_state.reset_mock()
+        app._on_status("Connecting to Gemini Live...")
+        app._status_bar.set_state.assert_called_once_with(
+            "idle", "Connecting to Gemini Live..."
+        )
+
+
+def test_audio_level_emits_for_chunk_while_disconnected():
+    """Level meter emits for each received chunk while audio flows.
+
+    No always-on capture: AudioRecorder only runs while recording, so idle
+    normally receives no chunks. This tests the emit-if-chunk path, not a
+    live idle preview.
+    """
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import array
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._client = None
+        worker._loop = None
+        worker._recording = False
+        captured = []
+        worker._signals.audio_level.connect(lambda v: captured.append(v))
+        chunk = array.array("h", [8000] * 240).tobytes()
+        worker._on_audio_chunk(chunk)
+        assert len(captured) == 1
+        assert 0.0 <= captured[0] <= 1.0
+
+
+def test_audio_level_chunk_while_disconnected_does_not_send_audio():
+    """Chunk received while disconnected still emits level but never sends."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    import array
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._injector = MagicMock()
+        worker._recording = False
+        client = MagicMock()
+        client.is_connected = False
+        worker._client = client
+        worker._loop = MagicMock()
+        captured = []
+        worker._signals.audio_level.connect(lambda v: captured.append(v))
+        worker._on_audio_chunk(array.array("h", [8000] * 240).tobytes())
+        assert len(captured) == 1
+        client.send_audio.assert_not_called()
+
+
+def test_hotkey_queue_preserved_when_mic_disabled():
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._client = MagicMock()
+        worker._client.is_connected = False
+        with worker._lock:
+            worker._reconnecting = True
+        errors: list[str] = []
+        worker._signals.error.connect(errors.append)
+        worker._start_recording()
+        assert errors == []
+        with worker._lock:
+            assert worker._pending_record is True
+
+
+# ── M1: _on_status reconnect routing covers every mid-reconnect string ──
+
+def _on_status_state(msg: str) -> str:
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+        app._status_bar = MagicMock()
+        app._tray = MagicMock()
+        app._on_status(msg)
+        return app._status_bar.set_state.call_args[0][0]
+
+
+def test_on_status_connection_lost_reconnecting():
+    assert _on_status_state("Connection lost - reconnecting...") == "reconnecting"
+
+
+def test_on_status_reconnect_attempt_progress():
+    assert _on_status_state("Reconnecting... (attempt 1/5)") == "reconnecting"
+
+
+def test_on_status_reconnect_attempt_failed_trying_next_key():
+    assert (
+        _on_status_state("Reconnect attempt 1 of 5 failed - trying next key...")
+        == "reconnecting"
+    )
+
+
+def test_on_status_reconnect_attempt_failed_retrying():
+    assert (
+        _on_status_state("Reconnect attempt 2 of 3 failed - retrying...")
+        == "reconnecting"
+    )
+
+
+def test_on_status_key_failed_trying_next_key():
+    assert _on_status_state("Key failed, trying next key...") == "reconnecting"
+
+
+def test_on_status_will_start_automatically():
+    assert (
+        _on_status_state("Reconnecting — will start automatically...")
+        == "reconnecting"
+    )
+
+
+def test_on_status_reconnected_stays_idle():
+    assert _on_status_state("Reconnected to Gemini Live") == "idle"
+
+
+def test_on_status_server_busy_retry_stays_idle():
+    # 5xx retryable-idle is amber reconnecting (not green idle).
+    assert (
+        _on_status_state("Server busy, ready to retry — press hotkey again")
+        == "reconnecting"
+    )
+
+
+# ── M3: press-release during reconnect cancels pending (no auto-start) ──
+
+def test_press_release_during_reconnect_cancels_pending():
+    """PTT press then release during reconnect clears pending: no auto-start."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mgr = SettingsManager(Path(tmp) / "s.json")
+        mgr.load()
+        mgr.set("api_key", "test-key-fake")
+        mgr.set("model", "models/gemini-3.1-flash-live-preview")
+        worker = WorkerThread(mgr)
+        worker._recorder = MagicMock()
+        worker._client = MagicMock()
+        worker._client.is_connected = False
+        with worker._lock:
+            worker._reconnecting = True
+
+        # Press during reconnect queues pending.
+        worker._start_recording()
+        with worker._lock:
+            assert worker._pending_record is True
+
+        # Release (not recording) cancels pending instead of auto-starting.
+        worker._on_hotkey_release(0x78)
+        with worker._lock:
+            assert worker._pending_record is False
+
+        # Reconnect success must NOT auto-start after cancel.
+        good = MagicMock()
+        good.last_error_category = None
+        good.last_error_reason = ""
+        good.is_connected = True
+        good.connect = MagicMock(return_value=None)
+        started: list[bool] = []
+        worker._signals.recording_started.connect(lambda: started.append(True))
+        with patch("voice_typing.app.GeminiLiveClient", return_value=good):
+            with patch.object(worker, "_sleep", return_value=False):
+                loop = MagicMock()
+                with patch("voice_typing.app.asyncio") as mock_asyncio:
+                    mock_asyncio.new_event_loop.return_value = loop
+                    mock_asyncio.set_event_loop = MagicMock()
+                    assert worker._reconnect() is True
+        assert worker._recorder.start.call_count == 0
+        assert started == []
+        if worker._loop is not None:
+            worker._loop = None
+
+
+def test_stop_clears_pending_record():
+    """WorkerThread.stop() clears a queued pending recording."""
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._hotkey_mgr = MagicMock()
+        with worker._lock:
+            worker._pending_record = True
+        worker.stop()
+        with worker._lock:
+            assert worker._pending_record is False
+
+
+# ── UX Phase B: toast routing matrix ─────────────────────────────────
+
+def _phase_b_app():
+    """VoiceTypeApp with mocked bar/tray but a REAL ToastManager."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    assert app._toast.mode is None
+    return app
+
+
+def test_status_reconnect_shows_transient_toast():
+    app = _phase_b_app()
+    try:
+        app._on_status("Reconnecting... (attempt 1/5)")
+        app._status_bar.set_state.assert_called_once_with(
+            "reconnecting", "Reconnecting... (attempt 1/5)"
+        )
+        assert app._toast.mode == "transient"
+        assert app._toast.message == "Reconnecting... (attempt 1/5)"
+    finally:
+        app._toast.close()
+
+
+def test_status_reconnected_hides_toast():
+    app = _phase_b_app()
+    try:
+        app._toast.show_persistent("Cannot connect: bad key")
+        assert app._toast.mode == "persistent"
+        app._on_status("Reconnected to Gemini Live")
+        app._status_bar.set_state.assert_called_once_with(
+            "idle", "Reconnected to Gemini Live"
+        )
+        assert app._toast.mode is None
+    finally:
+        app._toast.close()
+
+
+def test_status_idle_does_not_toast():
+    app = _phase_b_app()
+    try:
+        app._on_status("Connecting to Gemini Live...")
+        assert app._toast.mode is None
+    finally:
+        app._toast.close()
+
+
+def test_status_server_busy_shows_reconnecting_transient():
+    # Server-busy retryable maps to amber reconnecting + transient toast
+    # (same as other reconnecting states, via shared RECONNECT_HINTS).
+    app = _phase_b_app()
+    try:
+        app._on_status("Server busy, ready to retry — press hotkey again")
+        app._status_bar.set_state.assert_called_once_with(
+            "reconnecting", "Server busy, ready to retry — press hotkey again"
+        )
+        assert app._toast.mode == "transient"
+    finally:
+        app._toast.close()
+
+
+def test_error_connection_goes_persistent():
+    app = _phase_b_app()
+    try:
+        app._on_error("Cannot connect: HTTP 401 — check your API key and settings")
+        app._status_bar.set_state.assert_called_once_with(
+            "error-dead",
+            "Cannot connect: HTTP 401 — check your API key and settings",
+        )
+        app._tray.set_status.assert_called_once_with("Error")
+        assert app._toast.mode == "persistent"
+        assert "Cannot connect" in app._toast.message
+    finally:
+        app._toast.close()
+
+
+def test_error_api_key_missing_goes_persistent():
+    app = _phase_b_app()
+    try:
+        app._on_error("No API key configured")
+        assert app._toast.mode == "persistent"
+    finally:
+        app._toast.close()
+
+
+def test_error_microphone_goes_transient():
+    app = _phase_b_app()
+    try:
+        app._on_error("Failed to start microphone")
+        # Transient: amber processing capsule (not error-dead) + amber tray
+        # dot via the message itself + transient toast.
+        app._status_bar.set_state.assert_called_once_with(
+            "processing", "Failed to start microphone"
+        )
+        app._tray.set_status.assert_called_once_with(
+            "Failed to start microphone"
+        )
+        assert app._toast.mode == "transient"
+    finally:
+        app._toast.close()
+
+
+def test_error_injection_goes_transient():
+    app = _phase_b_app()
+    try:
+        app._on_error("Text injection failed — check target application")
+        app._status_bar.set_state.assert_called_once_with(
+            "processing", "Text injection failed — check target application"
+        )
+        app._tray.set_status.assert_called_once_with(
+            "Text injection failed — check target application"
+        )
+        assert app._toast.mode == "transient"
+    finally:
+        app._toast.close()
+
+
+def test_recording_start_hides_toast():
+    app = _phase_b_app()
+    try:
+        app._settings.set("sound_feedback", False)
+        app._toast.show_persistent("Cannot connect: bad key")
+        assert app._toast.mode == "persistent"
+        app._on_recording_started()
+        assert app._toast.mode is None
+        app._tray.update_recording_state.assert_called_once_with(True)
+    finally:
+        app._toast.close()
+
+
+def test_no_tray_fast_mode_sync():
+    """Tray fast-mode UI removed: no syncs, no toggle handler (Phase B)."""
+    import pathlib
+
+    text = pathlib.Path("voice_typing/app.py").read_text(encoding="utf-8")
+    assert "set_fast_mode" not in text
+    assert "_on_fast_mode_toggled" not in text
+    assert "fast_mode_toggled" not in text
+    app = _phase_b_app()
+    try:
+        assert not hasattr(app, "_on_fast_mode_toggled")
+        # Worker fast logic untouched (settings-driven, not tray-driven).
+        assert "fast_mode" in text
+    finally:
+        app._toast.close()
+
+
+def test_toast_open_settings_wired():
+    """Toast Open Settings action routes to VoiceTypeApp._open_settings."""
+    import pathlib
+
+    text = pathlib.Path("voice_typing/app.py").read_text(encoding="utf-8")
+    assert "self._toast.signals.open_settings.connect(self._open_settings)" in text
+    app = _phase_b_app()
+    try:
+        received = []
+        app._toast.signals.open_settings.connect(lambda: received.append(True))
+        app._toast.show_persistent("Cannot connect: bad key")
+        assert app._toast._window is not None
+        from PySide6.QtWidgets import QPushButton
+
+        btn = next(
+            b
+            for b in app._toast._window.findChildren(QPushButton)
+            if b.text() == "Open Settings"
+        )
+        btn.click()
+        assert received == [True]
+    finally:
+        app._toast.close()
+
+
+# ── UX Phase C: overlay geometry/pin/copy/edit wiring ─────────────────
+
+def _phase_c_app():
+    """VoiceTypeApp with mocked bar/tray but a REAL overlay (offscreen)."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    return app
+
+
+def test_overlay_settings_defaults_have_geometry_keys(tmp_path):
+    from voice_typing.config.settings import SettingsManager, DEFAULT_SETTINGS
+
+    assert DEFAULT_SETTINGS["overlay_x"] is None
+    assert DEFAULT_SETTINGS["overlay_y"] is None
+    assert DEFAULT_SETTINGS["overlay_width"] == 450
+    assert DEFAULT_SETTINGS["overlay_height"] == 200
+    assert DEFAULT_SETTINGS["overlay_pinned"] is False
+    mgr = SettingsManager(tmp_path / "s.json")
+    mgr.load()
+    assert mgr.get("overlay_pinned") is False
+
+
+def test_overlay_geometry_validation_clamps(tmp_path):
+    from voice_typing.config.settings import SettingsManager
+
+    mgr = SettingsManager(tmp_path / "s.json")
+    mgr.load()
+    mgr.set("overlay_width", 5)
+    mgr.set("overlay_height", 9999)
+    mgr.set("overlay_x", "bad")
+    mgr.set("overlay_pinned", "yes")
+    mgr.load()  # reload keeps file values; validate on load path
+    # Direct validation check via fresh load from file with bad values.
+    import json
+
+    bad = mgr.as_dict()
+    bad.update(
+        {"overlay_width": 5, "overlay_height": 9999, "overlay_x": "bad",
+         "overlay_pinned": "yes"}
+    )
+    (tmp_path / "s.json").write_text(json.dumps(bad), encoding="utf-8")
+    mgr2 = SettingsManager(tmp_path / "s.json")
+    mgr2.load()
+    assert mgr2.get("overlay_width") == 300
+    assert mgr2.get("overlay_height") == 600
+    assert mgr2.get("overlay_x") is None
+    assert mgr2.get("overlay_pinned") is False
+
+
+def test_overlay_geometry_changed_persists():
+    app = _phase_c_app()
+    try:
+        app._on_overlay_geometry_changed(12, 34, 450, 200)
+        assert app._settings.get("overlay_x") == 12
+        assert app._settings.get("overlay_y") == 34
+        assert app._settings.get("overlay_width") == 450
+        assert app._settings.get("overlay_height") == 200
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_overlay_pin_toggled_persists():
+    app = _phase_c_app()
+    try:
+        app._on_overlay_pin_toggled(True)
+        assert app._settings.get("overlay_pinned") is True
+        app._on_overlay_pin_toggled(False)
+        assert app._settings.get("overlay_pinned") is False
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_overlay_copy_uses_clipboard():
+    # M5: overlay owns the clipboard write; app handler only delegates
+    # (single setText via QApplication.clipboard, no duplicate in app).
+    from unittest.mock import MagicMock, patch
+
+    from PySide6.QtWidgets import QApplication
+
+    app = _phase_c_app()
+    try:
+        app._overlay.set_enabled(True)
+        app._overlay.add_final("hello copy")
+        with patch.object(
+            QApplication, "clipboard", return_value=MagicMock()
+        ) as mock_clip_fn:
+            mock_clip = mock_clip_fn.return_value
+            app._on_overlay_copy_clicked()
+            mock_clip.setText.assert_called_once_with("hello copy")
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_overlay_edit_commits_single_inject_no_double():
+    from unittest.mock import MagicMock
+
+    app = _phase_c_app()
+    try:
+        worker = MagicMock()
+        worker._inject = MagicMock()
+        app._worker = worker
+        app._overlay.add_final("stale final")
+        app._on_overlay_edit_committed("edited once")
+        worker._inject.assert_called_once_with("edited once")
+        # Buffer reset prevents a later finalize from re-injecting stale text.
+        worker._buffer.reset.assert_called_once()
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_overlay_edit_empty_ignored():
+    from unittest.mock import MagicMock
+
+    app = _phase_c_app()
+    try:
+        worker = MagicMock()
+        app._worker = worker
+        app._on_overlay_edit_committed("   ")
+        worker._inject.assert_not_called()
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_settings_saved_reapplies_pin_and_geometry():
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    worker = MagicMock()
+    worker.isRunning.return_value = True
+    app._worker = worker
+    try:
+        app._settings.set("overlay_pinned", True)
+        app._settings.set("overlay_width", 450)
+        app._settings.set("overlay_height", 200)
+        with patch("voice_typing.app.set_startup"):
+            app._on_settings_saved()
+        assert app._overlay.is_pinned is True
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_restore_geometry_clamped_to_screen():
+    from unittest.mock import MagicMock, patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+    app._status_bar = MagicMock()
+    app._tray = MagicMock()
+    try:
+        app._settings.set("overlay_x", 99999)
+        app._settings.set("overlay_y", 99999)
+        app._settings.set("overlay_width", 450)
+        app._settings.set("overlay_height", 200)
+        app._restore_overlay_geometry()
+        pending = app._overlay._pending_geometry
+        assert pending is not None
+        from PySide6.QtWidgets import QApplication
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            assert pending[0] <= avail.x() + avail.width() - 100
+            assert pending[1] <= avail.y() + avail.height() - 50
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+# ── Phase C reviewer B1: finals reach the overlay via final_received ──
+
+
+def test_worker_has_final_received_signal():
+    from voice_typing.app import WorkerSignals
+
+    assert hasattr(WorkerSignals, "final_received")
+
+
+def test_on_final_emits_final_received_and_injects_once():
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+        finals: list[str] = []
+        worker._signals.final_received.connect(finals.append)
+        worker._on_partial("hello")
+        worker._on_final("hello world")
+        # Overlay signal carries the raw final text.
+        assert finals == ["hello world"]
+        # Inject path unchanged — exactly one inject, no double.
+        assert worker._injector.inject.call_count == 1
+
+
+def test_on_final_empty_uses_buffer_text():
+    from pathlib import Path
+    import tempfile
+    from unittest.mock import MagicMock
+
+    from voice_typing.app import WorkerThread
+    from voice_typing.config.settings import SettingsManager
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+        worker._recorder = MagicMock()
+        worker._recording = True
+        worker._injector = MagicMock()
+        finals: list[str] = []
+        worker._signals.final_received.connect(finals.append)
+        worker._on_partial("sawasdee")
+        worker._on_final("")
+        assert finals == ["sawasdee"]
+        assert worker._injector.inject.call_count == 1
+
+
+def test_partial_to_final_overlay_segments_and_copy_nonempty():
+    # B1 integration: partial -> final -> overlay segments -> copy non-empty.
+    from unittest.mock import MagicMock, patch
+
+    from PySide6.QtWidgets import QApplication
+
+    app = _phase_c_app()
+    try:
+        app._overlay.set_enabled(True)
+        from pathlib import Path
+        import tempfile
+
+        from voice_typing.app import WorkerThread
+        from voice_typing.config.settings import SettingsManager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = WorkerThread(SettingsManager(Path(tmp) / "s.json"))
+            worker._recorder = MagicMock()
+            worker._recording = True
+            worker._injector = MagicMock()
+            # Wire exactly like VoiceTypeApp._spawn_worker (signal only feeds
+            # overlay; inject path unchanged).
+            worker._signals.partial_received.connect(app._overlay.add_partial)
+            worker._signals.final_received.connect(app._overlay.add_final)
+            worker._on_partial("streaming hello")
+            assert app._overlay._segments == [("streaming hello", "partial")]
+            worker._on_final("hello world")
+            assert ("hello world", "final") in app._overlay._segments
+            assert not any(k == "partial" for _, k in app._overlay._segments)
+            assert worker._injector.inject.call_count == 1
+        with patch.object(
+            QApplication, "clipboard", return_value=MagicMock()
+        ) as mock_clip_fn:
+            mock_clip = mock_clip_fn.return_value
+            text = app._overlay.copy_to_clipboard()
+            assert text != ""
+            assert "hello world" in text
+            mock_clip.setText.assert_called_once()
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+# ── UX Phase D: setup wizard + history panel wiring ──────────────────
+
+def _phase_d_app():
+    """VoiceTypeApp with real tray/overlay/toast (offscreen)."""
+    from unittest.mock import patch
+
+    with patch("voice_typing.app.set_startup"):
+        from voice_typing.app import VoiceTypeApp
+        app = VoiceTypeApp()
+    return app
+
+
+class _FakeWizard:
+    result = 1  # QDialog.DialogCode.Accepted
+    _keys = ["wk-1", "wk-2"]
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def exec(self):
+        return self.__class__.result
+
+    def keys(self):
+        return list(self.__class__._keys)
+
+    def language(self):
+        return "thai"
+
+    def hotkey(self):
+        return 0x79
+
+    def microphone_device_id(self):
+        return None
+
+
+def test_run_setup_wizard_saves_multi_keys():
+    from unittest.mock import patch
+
+    app = _phase_d_app()
+    try:
+        # Hermetic: isolate from the developer's real on-disk settings
+        # (in-memory only; never persist fake keys to the real file).
+        app._settings.set_api_keys([])
+        assert app._settings.get_api_keys() == []
+        with patch("voice_typing.ui.setup_wizard.SetupWizard", _FakeWizard), \
+             patch.object(app._settings, "save"):
+            app._run_setup_wizard()
+        assert app._settings.get_api_keys() == ["wk-1", "wk-2"]
+        assert app._settings.get("api_key") == "wk-1"
+        assert app._settings.get("language") == "thai"
+        assert app._settings.get("hotkey") == 0x79
+        assert app._settings.get("microphone_device_id") is None
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_run_setup_wizard_skips_when_key_exists():
+    from unittest.mock import patch
+
+    app = _phase_d_app()
+    try:
+        app._settings.set_api_keys(["existing-key"])
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("wizard must not open when a key exists")
+
+        with patch("voice_typing.ui.setup_wizard.SetupWizard", _boom):
+            app._run_setup_wizard()
+        assert app._settings.get_api_keys() == ["existing-key"]
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_run_setup_wizard_reject_warns():
+    from unittest.mock import patch
+
+    app = _phase_d_app()
+    try:
+        # Hermetic: a real on-disk key would make the wizard skip entirely.
+        app._settings.set_api_keys([])
+        _FakeWizard.result = 0  # Rejected
+        try:
+            with patch("voice_typing.ui.setup_wizard.SetupWizard", _FakeWizard), \
+                 patch("voice_typing.app.QMessageBox") as mock_msgbox:
+                app._run_setup_wizard()
+            mock_msgbox.warning.assert_called_once()
+            assert app._settings.get_api_keys() == []
+        finally:
+            _FakeWizard.result = 1
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_on_history_changed_forwards_to_tray_and_panel():
+    from PySide6.QtCore import Qt as _Qt
+
+    from voice_typing.ui.settings_window import SettingsWindow
+
+    app = _phase_d_app()
+    try:
+        win = SettingsWindow(app._settings)
+        app._settings_win = win
+        try:
+            app._on_history_changed(["a", "b"])
+            assert app._tray._history == ["a", "b"]
+            assert win.history_panel.count() == 2
+            assert win.history_panel._list.item(0).data(
+                _Qt.ItemDataRole.UserRole) == "b"
+        finally:
+            app._settings_win = None
+            win._queue.shutdown()
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_open_settings_wires_history_panel():
+    """End-to-end: seed + re-inject + clear flow through the panel."""
+    from unittest.mock import MagicMock, patch
+
+    from PySide6.QtCore import Qt as _Qt
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    from voice_typing.ui.settings_window import SettingsWindow
+
+    app = _phase_d_app()
+    try:
+        worker = MagicMock()
+        worker._history = ["h1", "h2"]
+        app._worker = worker
+        probed = {}
+
+        def fake_exec(self):
+            # The dialog is "open": app._settings_win is still set.
+            probed["seeded"] = self.history_panel.count()
+            probed["first"] = self.history_panel._list.item(0).data(
+                _Qt.ItemDataRole.UserRole)
+            self.history_panel._list.setCurrentRow(0)
+            self.history_panel._reinject_btn.click()
+            self.history_panel._clear_btn.click()
+            probed["after_clear"] = self.history_panel.count()
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(SettingsWindow, "exec", fake_exec), \
+             patch.object(
+                 QMessageBox, "question",
+                 return_value=QMessageBox.StandardButton.Yes,
+             ):
+            app._open_settings()
+
+        assert probed["seeded"] == 2
+        assert probed["first"] == "h2"
+        worker._re_inject.assert_called_once_with("h2")
+        assert worker._history == []
+        worker._save_history.assert_called_once()
+        assert app._tray._history == []
+        assert probed["after_clear"] == 0
+    finally:
+        app._overlay.close()
+        app._toast.close()
+
+
+def test_on_clear_history_updates_panel():
+    from unittest.mock import MagicMock, patch
+
+    from PySide6.QtWidgets import QMessageBox
+    from voice_typing.ui.settings_window import SettingsWindow
+
+    app = _phase_d_app()
+    try:
+        worker = MagicMock()
+        worker._history = ["a", "b"]
+        app._worker = worker
+        win = SettingsWindow(app._settings)
+        app._settings_win = win
+        try:
+            win.history_panel.set_history(["a", "b"])
+            with patch.object(
+                QMessageBox, "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                app._on_clear_history()
+            assert worker._history == []
+            worker._save_history.assert_called_once()
+            assert app._tray._history == []
+            assert win.history_panel.count() == 0
+        finally:
+            app._settings_win = None
+            win._queue.shutdown()
+    finally:
+        app._overlay.close()
+        app._toast.close()

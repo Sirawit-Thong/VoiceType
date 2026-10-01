@@ -46,6 +46,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "overlay_font_size": 13,
     "overlay_max_height": 300,
     "overlay_auto_dismiss_seconds": 3,
+    # UX Phase C: overlay geometry + pin (None = first-run default position)
+    "overlay_x": None,
+    "overlay_y": None,
+    "overlay_width": 450,
+    "overlay_height": 200,
+    "overlay_pinned": False,
 }
 
 SUPPORTED_LANGUAGES: list[tuple[str, str]] = [
@@ -73,6 +79,7 @@ class SettingsManager:
             self._data = dict(DEFAULT_SETTINGS)
             self.save()
         self._sync_api_keys()
+        self._validate_overlay_geometry()
 
     @staticmethod
     def _normalize_keys(keys: Any) -> list[str]:
@@ -108,6 +115,30 @@ class SettingsManager:
         if keys:
             self._data["api_key"] = keys[0]
         self._data["api_keys"] = list(keys)
+
+    def _validate_overlay_geometry(self) -> None:
+        """Clamp Phase C overlay geometry/pin to sane ranges (in place)."""
+        for key in ("overlay_x", "overlay_y"):
+            val = self._data.get(key)
+            if val is None:
+                continue
+            if isinstance(val, bool) or not isinstance(val, int):
+                self._data[key] = None
+            elif not -10000 <= val <= 10000:
+                self._data[key] = None
+        width = self._data.get("overlay_width")
+        if isinstance(width, bool) or not isinstance(width, int):
+            self._data["overlay_width"] = 450
+        else:
+            self._data["overlay_width"] = max(300, min(800, width))
+        height = self._data.get("overlay_height")
+        if isinstance(height, bool) or not isinstance(height, int):
+            self._data["overlay_height"] = 200
+        else:
+            self._data["overlay_height"] = max(100, min(600, height))
+        pinned = self._data.get("overlay_pinned")
+        if not isinstance(pinned, bool):
+            self._data["overlay_pinned"] = bool(pinned) if pinned in (0, 1) else False
 
     def get_api_keys(self) -> list[str]:
         keys = self._data.get("api_keys", [])

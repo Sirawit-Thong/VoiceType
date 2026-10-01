@@ -1,4 +1,26 @@
 # voice_typing/ui/settings_window.py
+"""UX Phase D: settings window with sidebar navigation + background queue.
+
+Layout: sidebar ``QListWidget`` (General / Hotkey / Speech / AI Keys /
+History / About) + search filter + ``QStackedWidget`` pages. Existing
+page builders are reparented into the stack (all ``self._*`` widget
+names preserved).
+
+Decisions (Phase D, pre-approved):
+- Search filters page titles only (not individual control labels).
+- AI-Keys rows show a per-key status dot (gray untested / amber testing /
+  green valid / red invalid) + masked label + ``Key i/n`` index. No GCP
+  project API is called — the index is positional, not project-aware.
+- History page embeds :class:`HistoryPanel`; history-row selection never
+  marks the window dirty (dirty = settings controls only).
+- Dirty tracking appends ``*`` to the title; ``Ctrl+S`` saves; closing
+  with unsaved changes asks Save / Discard / Cancel.
+- API-key tests + model loads run on :class:`WorkerQueue` (single
+  QObject-worker + QThread); the old ``_ApiKeyTester`` / ``_ModelLoader``
+  chains are removed. ``_LiveMicTester`` stays a local thread.
+- Setup wizard is relaunchable from the About page (applies to UI
+  controls; saving still goes through Save).
+"""
 from __future__ import annotations
 
 import logging
@@ -7,7 +29,15 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal, QTimer, QUrl
-from PySide6.QtGui import QCursor, QDesktopServices, QIcon, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,16 +56,32 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpacerItem,
     QSizePolicy,
-    QTabWidget,
+    QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from voice_typing.audio.recorder import list_input_devices
 from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager, VERSION, RELEASE_URL, get_asset_path
-from voice_typing.speech.gemini_live import MODEL, fetch_live_models
+from voice_typing.speech.gemini_live import MODEL
 from voice_typing.speech.key_pool import KeyPool
+from voice_typing.ui.history_panel import HistoryPanel
+from voice_typing.ui.worker_queue import WorkerQueue
 from voice_typing.windows.hotkey import HOTKEY_OPTIONS, hotkey_name
+
+
+# Per-key dot colors: gray untested / amber testing / green valid / red invalid.
+_KEY_STATUS_COLORS = {
+    "untested": "#9aa0a6",
+    "testing": "#fbbc04",
+    "valid": "#34a853",
+    "invalid": "#ea4335",
+}
+
+_PAGE_TITLES = ["General", "Hotkey", "Speech", "AI Keys", "History", "About"]
+
+_BASE_TITLE = "VoiceType Settings"
 
 
 def _normalize_model(name: str) -> str:
@@ -43,39 +89,6 @@ def _normalize_model(name: str) -> str:
     if not name:
         return MODEL
     return name if name.startswith("models/") else f"models/{name}"
-
-
-class _ModelLoader(QThread):
-    finished = Signal(list)
-    failed = Signal(str)
-
-    def __init__(self, api_key: str) -> None:
-        super().__init__()
-        self._api_key = api_key
-
-    def run(self) -> None:
-        try:
-            self.finished.emit(fetch_live_models(self._api_key))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class _ApiKeyTester(QThread):
-    finished = Signal(bool, str)
-
-    def __init__(self, api_key: str) -> None:
-        super().__init__()
-        self._api_key = api_key
-
-    def run(self) -> None:
-        try:
-            models = fetch_live_models(self._api_key)
-            if models:
-                self.finished.emit(True, f"API Key is valid! Connected to Gemini API ({len(models)} models available).")
-            else:
-                self.finished.emit(False, "API Key test returned no models.")
-        except Exception as exc:
-            self.finished.emit(False, f"API Key test failed:\n{exc}")
 
 
 class _LiveMicTester(QThread):
@@ -136,34 +149,37 @@ class SettingsWindow(QDialog):
     def __init__(self, settings: SettingsManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
-        self._key_tester: _ApiKeyTester | None = None
-        self._test_all_tester: _ApiKeyTester | None = None
-        self._test_all_queue: list[str] = []
+        self._queue = WorkerQueue(self)
+        self._queue.key_tested.connect(self._on_queue_key_tested)
+        self._queue.test_all_finished.connect(self._on_queue_test_all_finished)
+        self._queue.models_loaded.connect(self._on_models_loaded)
+        self._queue.models_failed.connect(self._on_models_failed)
         self._test_all_results: list[tuple[str, bool, str]] = []
-        self._model_loader: _ModelLoader | None = None
+        self._key_status: dict[str, str] = {}
         self._mic_tester: _LiveMicTester | None = None
         self._capturing_key = False
         self._capture_timer: QTimer | None = None
-        self.setWindowTitle("VoiceType Settings")
+        self._dirty = False
+        self._populating = False
+        self.setWindowTitle(_BASE_TITLE)
         icon_path = get_asset_path("icon.ico")
         if not icon_path.exists():
             icon_path = get_asset_path("icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        self.setMinimumSize(420, 380)
+        self.setMinimumSize(640, 440)
         self._build_ui()
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
             QWidget { background: #1a1b1e; color: #e8eaed; font-family: 'Segoe UI', sans-serif; }
-            QTabWidget::pane { border: none; background: #1a1b1e; }
-            QTabBar { background: transparent; }
-            QTabBar::tab { background: transparent; color: #9aa0a6; padding: 8px 16px; border: none; border-bottom: 2px solid transparent; font-size: 11px; }
-            QTabBar::tab:selected { color: #e8eaed; border-bottom: 2px solid #8ab4f8; }
-            QTabBar::tab:hover { color: #c4c7c5; }
             QLabel { color: #9aa0a6; font-size: 11px; background: transparent; border: none; }
             QLineEdit { background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043; border-radius: 6px; padding: 6px 10px; font-size: 11px; selection-background-color: #264f78; }
             QLineEdit:focus { border-color: #8ab4f8; }
+            QListWidget { background: #212227; border: 1px solid #3c4043; border-radius: 6px; padding: 4px; font-size: 12px; outline: none; }
+            QListWidget::item { padding: 8px 10px; border-radius: 4px; }
+            QListWidget::item:selected { background: #303134; color: #e8eaed; }
+            QListWidget::item:hover { background: #2b2d31; }
             QComboBox { background: #2b2d31; color: #e8eaed; border: 1px solid #3c4043; border-radius: 6px; padding: 6px 10px; font-size: 11px; min-height: 20px; }
             QComboBox:hover { border-color: #5f6368; }
             QComboBox::drop-down { border: none; width: 24px; }
@@ -200,13 +216,37 @@ class SettingsWindow(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
         layout.setContentsMargins(12, 8, 12, 8)
-        tabs = QTabWidget()
-        tabs.addTab(self._general_tab(), "⚙️  General")
-        tabs.addTab(self._hotkey_tab(), "⌨️  Hotkey")
-        tabs.addTab(self._speech_tab(), "🎤  Speech")
-        tabs.addTab(self._gemini_tab(), "🤖  AI / Gemini")
-        tabs.addTab(self._about_tab(), "ℹ️  About")
-        layout.addWidget(tabs)
+
+        body = QHBoxLayout()
+        body.setSpacing(10)
+
+        side = QVBoxLayout()
+        side.setSpacing(6)
+        self._search_box = QLineEdit()
+        self._search_box.setPlaceholderText("Search settings…")
+        self._search_box.setClearButtonEnabled(True)
+        self._search_box.textChanged.connect(self._filter_sidebar)
+        side.addWidget(self._search_box)
+
+        self._sidebar = QListWidget()
+        self._sidebar.setFixedWidth(150)
+        for title in _PAGE_TITLES:
+            self._sidebar.addItem(title)
+        self._sidebar.setCurrentRow(0)
+        self._sidebar.currentRowChanged.connect(self._on_sidebar_row_changed)
+        side.addWidget(self._sidebar, 1)
+        body.addLayout(side)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._general_tab())
+        self._stack.addWidget(self._hotkey_tab())
+        self._stack.addWidget(self._speech_tab())
+        self._stack.addWidget(self._ai_keys_tab())
+        self._stack.addWidget(self._history_tab())
+        self._stack.addWidget(self._about_tab())
+        body.addWidget(self._stack, 1)
+
+        layout.addLayout(body, 1)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -230,7 +270,94 @@ class SettingsWindow(QDialog):
         btn_layout.addWidget(save_btn)
         layout.addLayout(btn_layout)
 
-        self._populate_ui_from_settings()
+        self._save_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
+        self._save_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._save_shortcut.activated.connect(self._save_and_close)
+
+        self._populating = True
+        try:
+            self._populate_ui_from_settings()
+        finally:
+            self._populating = False
+        self._set_dirty(False)
+        self._wire_dirty_tracking()
+
+    # -- sidebar -----------------------------------------------------------
+    def _on_sidebar_row_changed(self, row: int) -> None:
+        if 0 <= row < self._stack.count():
+            self._stack.setCurrentIndex(row)
+
+    def select_page(self, title: str) -> bool:
+        """Select a sidebar page by title (case-insensitive)."""
+        needle = (title or "").strip().lower().replace("-", " ").replace("/", " ")
+        for i in range(self._sidebar.count()):
+            item = self._sidebar.item(i)
+            if item is None:
+                continue
+            label = item.text().lower().replace("-", " ").replace("/", " ")
+            if label == needle or needle in label or label in needle:
+                self._sidebar.setCurrentRow(i)
+                return True
+        return False
+
+    def _filter_sidebar(self, text: str) -> None:
+        """Filter sidebar rows by page title only (not control labels)."""
+        needle = (text or "").strip().lower()
+        for i in range(self._sidebar.count()):
+            item = self._sidebar.item(i)
+            if item is None:
+                continue
+            self._sidebar.setRowHidden(i, bool(needle) and needle not in item.text().lower())
+        # Keep a visible page selected.
+        current = self._sidebar.currentRow()
+        if current >= 0 and self._sidebar.isRowHidden(current):
+            for i in range(self._sidebar.count()):
+                if not self._sidebar.isRowHidden(i):
+                    self._sidebar.setCurrentRow(i)
+                    break
+
+    # -- dirty tracking ------------------------------------------------------
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def _set_dirty(self, dirty: bool) -> None:
+        self._dirty = bool(dirty)
+        self.setWindowTitle(_BASE_TITLE + ("*" if self._dirty else ""))
+
+    def _mark_dirty(self) -> None:
+        if self._populating:
+            return
+        self._set_dirty(True)
+
+    def _wire_dirty_tracking(self) -> None:
+        mark = lambda *a: self._mark_dirty()
+        for combo in (
+            self._mode_combo, self._capsule_style_combo, self._hotkey_combo,
+            self._lang_combo, self._mic_combo, self._model_combo,
+            self._overlay_font_combo,
+        ):
+            combo.currentIndexChanged.connect(mark)
+        for check in (
+            self._start_windows, self._show_status, self._sound_feedback,
+            self._copy_to_clipboard, self._overlay_enabled, self._fast_mode,
+        ):
+            check.toggled.connect(mark)
+        for slider in (
+            self._opacity_slider, self._speed_slider, self._sensitivity_slider,
+            self._overlay_opacity_slider, self._overlay_dismiss_slider,
+        ):
+            slider.valueChanged.connect(mark)
+        self._overlay_max_height_spin.valueChanged.connect(mark)
+        self._custom_vocab.textChanged.connect(mark)
+        self._api_key_input.textChanged.connect(mark)
+        try:
+            model = self._api_keys_list.model()
+            model.rowsInserted.connect(mark)
+            model.rowsRemoved.connect(mark)
+        except Exception:
+            pass
+        # History selection is intentionally NOT wired (dirty = settings only).
 
     @staticmethod
     def _make_separator() -> QFrame:
@@ -311,6 +438,16 @@ class SettingsWindow(QDialog):
         self._overlay_font_combo.addItem("Medium (13px)", 13)
         self._overlay_font_combo.addItem("Large (16px)", 16)
         layout.addRow("Overlay Font Size:", self._overlay_font_combo)
+
+        # M4: max-height binds the existing overlay_max_height key (100-600px).
+        # Pin + geometry are intentionally NOT exposed here — they are
+        # overlay-signal-owned (pin_toggled/geometry_changed persist to
+        # settings via the overlay title-bar + drag/resize, no manual UI).
+        self._overlay_max_height_spin = QSpinBox()
+        self._overlay_max_height_spin.setRange(100, 600)
+        self._overlay_max_height_spin.setSingleStep(10)
+        self._overlay_max_height_spin.setSuffix(" px")
+        layout.addRow("Overlay Max Height:", self._overlay_max_height_spin)
 
         overlay_dismiss_layout = QHBoxLayout()
         self._overlay_dismiss_slider = QSlider(Qt.Orientation.Horizontal)
@@ -423,16 +560,16 @@ class SettingsWindow(QDialog):
             text = "High"
         self._sensitivity_label.setText(text)
 
-    def _gemini_tab(self) -> QWidget:
+    def _ai_keys_tab(self) -> QWidget:
         w = QWidget()
         layout = QFormLayout(w)
         layout.setVerticalSpacing(8)
         layout.setHorizontalSpacing(12)
         layout.setContentsMargins(12, 8, 12, 8)
 
-        # Multi-key list (masked display, full key in UserRole).
+        # Multi-key list (masked display + per-key dot + index, full key in UserRole).
         self._api_keys_list = QListWidget()
-        self._api_keys_list.setMaximumHeight(90)
+        self._api_keys_list.setMaximumHeight(110)
         layout.addRow("API Keys:", self._api_keys_list)
 
         # Add row: new-key input + Add button.
@@ -507,12 +644,26 @@ class SettingsWindow(QDialog):
         layout.addRow("", vocab_help)
 
         vocab_warning = QLabel(
-            "\u26a0 Note: Requires \"Fast Mode\" to be OFF to take effect."
+            "⚠ Note: Requires \"Fast Mode\" to be OFF to take effect."
         )
         vocab_warning.setStyleSheet("color: #fbbc04; font-size: 10px;")
         vocab_warning.setWordWrap(True)
         layout.addRow("", vocab_warning)
 
+        return w
+
+    # Compat alias: pre-rename name kept for tests/callers.
+    _gemini_tab = _ai_keys_tab
+
+    def _history_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 8, 12, 8)
+        hint = QLabel("Recent dictations (newest first). Select an item, then Copy or Re-inject.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.history_panel = HistoryPanel()
+        layout.addWidget(self.history_panel, 1)
         return w
 
     def _about_tab(self) -> QWidget:
@@ -558,6 +709,10 @@ class SettingsWindow(QDialog):
         get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://aistudio.google.com/apikey")))
         layout.addWidget(get_key_btn, 0, Qt.AlignmentFlag.AlignCenter)
 
+        self._wizard_btn = QPushButton("🧙  Run Setup Wizard…")
+        self._wizard_btn.clicked.connect(self._open_setup_wizard)
+        layout.addWidget(self._wizard_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
         layout.addStretch()
 
         sep = QFrame()
@@ -576,6 +731,36 @@ class SettingsWindow(QDialog):
         layout.addWidget(reset_btn, 0, Qt.AlignmentFlag.AlignCenter)
 
         return w
+
+    def _open_setup_wizard(self) -> None:
+        """Relaunch the setup wizard; apply accepted results to UI controls."""
+        from voice_typing.ui.setup_wizard import SetupWizard
+
+        wiz = SetupWizard(self)
+        if wiz.exec() != QDialog.DialogCode.Accepted:
+            return
+        keys = wiz.keys()
+        if keys:
+            self._refresh_keys_list(keys)
+        from voice_typing.config.settings import LANGUAGE_INDEX
+        self._lang_combo.setCurrentIndex(LANGUAGE_INDEX.get(wiz.language(), 0))
+        vk = wiz.hotkey()
+        found = -1
+        for i in range(self._hotkey_combo.count()):
+            if self._hotkey_combo.itemData(i) == vk:
+                found = i
+                break
+        if found == -1:
+            self._hotkey_combo.addItem(hotkey_name(vk), vk)
+            found = self._hotkey_combo.count() - 1
+        self._hotkey_combo.setCurrentIndex(found)
+        self._refresh_mics()
+        mic_id = wiz.microphone_device_id()
+        for i in range(self._mic_combo.count()):
+            if self._mic_combo.itemData(i) == mic_id:
+                self._mic_combo.setCurrentIndex(i)
+                break
+        self._mark_dirty()
 
     def _play_test_beep(self) -> None:
         def _beep():
@@ -646,39 +831,31 @@ class SettingsWindow(QDialog):
                 self._mic_level_bar.setValue(0)
             except Exception:
                 pass
-        # Abort any in-flight API-key test chain so no callback fires
-        # after close (offscreen-safe, no QMessageBox here).
-        self._test_all_queue = []
-        for _attr in ("_key_tester", "_test_all_tester"):
-            tester = getattr(self, _attr, None)
-            if tester is not None:
-                try:
-                    tester.finished.disconnect()
-                except (RuntimeError, TypeError):
-                    pass
-                except Exception:
-                    pass
-                try:
-                    if tester.isRunning():
-                        tester.wait(500)
-                except Exception:
-                    pass
-                setattr(self, _attr, None)
-        loader = getattr(self, "_model_loader", None)
-        if loader is not None:
-            for _sig in ("finished", "failed"):
-                try:
-                    getattr(loader, _sig).disconnect()
-                except (RuntimeError, TypeError):
-                    pass
-                except Exception:
-                    pass
-            try:
-                if loader.isRunning():
-                    loader.wait(500)
-            except Exception:
+        # Unsaved-changes confirm BEFORE tearing down the worker queue so
+        # Cancel keeps background work alive.
+        if self._dirty:
+            reply = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes. Save before closing?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self._save_settings()
+                self._set_dirty(False)
+            elif reply == QMessageBox.StandardButton.Discard:
                 pass
-            self._model_loader = None
+            else:
+                event.ignore()
+                return
+        # Close-safe worker teardown: cancel + disconnect + wait
+        # (offscreen-safe, no QMessageBox here).
+        try:
+            self._queue.shutdown()
+        except Exception:
+            pass
         try:
             self._load_models_btn.setEnabled(True)
             self._load_models_btn.setText("Load models")
@@ -732,6 +909,13 @@ class SettingsWindow(QDialog):
             f"{dismiss_val} {'sec' if dismiss_val == 1 else 'secs'}"
         )
 
+        # M4 round-trip: clamp existing key into spin range.
+        try:
+            _mh = int(self._settings.get("overlay_max_height", 300))
+        except (TypeError, ValueError):
+            _mh = 300
+        self._overlay_max_height_spin.setValue(max(100, min(600, _mh)))
+
         # Hotkey
         current_hotkey = self._settings.get("hotkey", 0x78)
         self._hotkey_combo.clear()
@@ -784,7 +968,7 @@ class SettingsWindow(QDialog):
                 stored_keys = [legacy.strip()]
         self._refresh_keys_list(stored_keys)
         self._api_key_input.clear()
-        self._api_status.setText("\u25cf Not tested")
+        self._api_status.setText("● Not tested")
         self._api_status.setStyleSheet("color: #9aa0a6; font-size: 16px;")
 
         current_model = _normalize_model(self._settings.get("model", MODEL))
@@ -880,14 +1064,40 @@ class SettingsWindow(QDialog):
         super().keyPressEvent(event)
 
     # -- Multi-key helpers -------------------------------------------------
-    def _refresh_keys_list(self, keys: list[str]) -> None:
+    def _refresh_keys_list(self, keys: list[str], reset_status: bool = False) -> None:
+        """Rebuild the key list with per-key dot + masked label + index.
+
+        Statuses survive add/remove (keyed by full key); ``reset_status``
+        clears them back to untested.
+        """
+        keys = KeyPool.normalize_keys(keys)
+        if reset_status:
+            self._key_status = {}
+        for k in keys:
+            self._key_status.setdefault(k, "untested")
+        for k in list(self._key_status):
+            if k not in set(keys):
+                del self._key_status[k]
         self._api_keys_list.clear()
-        for k in KeyPool.normalize_keys(keys):
-            item = QListWidgetItem(KeyPool.mask(k))
+        n = len(keys)
+        for i, k in enumerate(keys):
+            status = self._key_status.get(k, "untested")
+            item = QListWidgetItem(f"● {KeyPool.mask(k)}  (Key {i + 1}/{n})")
             item.setData(Qt.ItemDataRole.UserRole, k)
+            item.setForeground(QColor(_KEY_STATUS_COLORS.get(status, "#9aa0a6")))
             self._api_keys_list.addItem(item)
 
-    def _collect_keys_from_ui(self) -> list[str]:
+    def _set_key_status(self, key: str, status: str) -> None:
+        self._key_status[key] = status
+        n = self._api_keys_list.count()
+        for i in range(n):
+            item = self._api_keys_list.item(i)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == key:
+                item.setText(f"● {KeyPool.mask(key)}  (Key {i + 1}/{n})")
+                item.setForeground(QColor(_KEY_STATUS_COLORS.get(status, "#9aa0a6")))
+                break
+
+    def _collect_keys_from_ui(self, raw: bool = False) -> list[str]:
         keys: list[str] = []
         for i in range(self._api_keys_list.count()):
             item = self._api_keys_list.item(i)
@@ -896,10 +1106,11 @@ class SettingsWindow(QDialog):
             full = item.data(Qt.ItemDataRole.UserRole)
             if isinstance(full, str) and full.strip():
                 keys.append(full.strip())
-        # Include un-added input text so legacy single-field flows still save.
-        pending = self._api_key_input.text().strip()
-        if pending and pending not in keys:
-            keys.append(pending)
+        if not raw:
+            # Include un-added input text so legacy single-field flows still save.
+            pending = self._api_key_input.text().strip()
+            if pending and pending not in keys:
+                keys.append(pending)
         return KeyPool.normalize_keys(keys)
 
     def _selected_or_first_key(self) -> str:
@@ -947,31 +1158,43 @@ class SettingsWindow(QDialog):
             # is not a QObject) or the C++ item leaks.
             taken = self._api_keys_list.takeItem(self._api_keys_list.row(item))
             del taken
+        # Prune statuses + re-index remaining rows.
+        remaining = self._collect_keys_from_ui(raw=True)
+        self._refresh_keys_list(remaining)
+
+    # -- WorkerQueue-driven test / load ---------------------------------------
+    def _set_api_busy(self, busy: bool, what: str = "") -> None:
+        self._test_key_btn.setEnabled(not busy)
+        self._test_all_btn.setEnabled(not busy)
+        if busy:
+            self._api_status.setText("● Testing...")
+            self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
+            if what == "key":
+                self._test_key_btn.setText("Testing...")
+            elif what == "all":
+                self._test_all_btn.setText("Testing...")
 
     def _test_api_key(self) -> None:
         api_key = self._effective_single_key()
         if not api_key:
             QMessageBox.warning(self, "API Key Required", "Enter an API Key to test.")
             return
-        self._test_key_btn.setEnabled(False)
+        self._set_key_status(api_key, "testing")
+        self._set_api_busy(True, "key")
         self._test_key_btn.setText("Testing...")
-        self._api_status.setText("\u25cf Testing...")
-        self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
-        tester = _ApiKeyTester(api_key)
-        tester.finished.connect(self._on_api_key_tested)
-        tester.start()
-        self._key_tester = tester
+        self._queue.test_key(api_key)
 
-    def _on_api_key_tested(self, success: bool, msg: str) -> None:
+    def _on_queue_key_tested(self, key: str, success: bool, msg: str) -> None:
         self._test_key_btn.setEnabled(True)
         self._test_key_btn.setText("Test Key")
-        self._key_tester = None
+        self._test_all_btn.setEnabled(True)
+        self._set_key_status(key, "valid" if success else "invalid")
         if success:
-            self._api_status.setText("\u25cf Valid")
+            self._api_status.setText("● Valid")
             self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
             QMessageBox.information(self, "API Key Test", msg)
         else:
-            self._api_status.setText("\u25cf Invalid")
+            self._api_status.setText("● Invalid")
             self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
             QMessageBox.warning(self, "API Key Test", msg)
 
@@ -980,44 +1203,30 @@ class SettingsWindow(QDialog):
         if not keys:
             QMessageBox.warning(self, "API Key Required", "Add at least one API Key to test.")
             return
-        self._test_all_queue = list(keys)
-        self._test_all_results = []
-        self._test_all_btn.setEnabled(False)
+        for k in keys:
+            self._set_key_status(k, "testing")
+        self._set_api_busy(True, "all")
         self._test_all_btn.setText("Testing...")
-        self._api_status.setText("\u25cf Testing...")
-        self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
-        self._test_next_key()
+        self._queue.test_all(keys)
 
-    def _test_next_key(self) -> None:
-        if not self._test_all_queue:
-            self._test_all_tester = None
-            self._finish_test_all()
-            return
-        key = self._test_all_queue[0]
-        tester = _ApiKeyTester(key)
-        tester.finished.connect(self._on_test_all_key_finished)
-        tester.start()
-        self._test_all_tester = tester
-
-    def _on_test_all_key_finished(self, success: bool, msg: str) -> None:
-        key = self._test_all_queue.pop(0) if self._test_all_queue else ""
-        self._test_all_results.append((key, success, msg))
-        self._test_next_key()
-
-    def _finish_test_all(self) -> None:
-        self._test_all_tester = None
+    def _on_queue_test_all_finished(self, results: list) -> None:
+        self._test_all_results = list(results)
         self._test_all_btn.setEnabled(True)
         self._test_all_btn.setText("Test All")
+        self._test_key_btn.setEnabled(True)
+        self._test_key_btn.setText("Test Key")
+        for k, ok, _ in self._test_all_results:
+            self._set_key_status(k, "valid" if ok else "invalid")
         ok = sum(1 for _, s, _ in self._test_all_results if s)
         total = len(self._test_all_results)
         if total and ok == total:
-            self._api_status.setText("\u25cf Valid")
+            self._api_status.setText("● Valid")
             self._api_status.setStyleSheet("color: #34a853; font-size: 16px;")
         elif ok:
-            self._api_status.setText("\u25cf Partial")
+            self._api_status.setText("● Partial")
             self._api_status.setStyleSheet("color: #fbbc04; font-size: 16px;")
         else:
-            self._api_status.setText("\u25cf Invalid")
+            self._api_status.setText("● Invalid")
             self._api_status.setStyleSheet("color: #ea4335; font-size: 16px;")
         lines = [
             f"{KeyPool.mask(k)}: {'OK' if s else 'FAIL'}"
@@ -1038,11 +1247,7 @@ class SettingsWindow(QDialog):
             return
         self._load_models_btn.setEnabled(False)
         self._load_models_btn.setText("Loading...")
-        loader = _ModelLoader(api_key)
-        loader.finished.connect(self._on_models_loaded)
-        loader.failed.connect(self._on_models_failed)
-        loader.start()
-        self._model_loader = loader
+        self._queue.load_models(api_key)
 
     def _on_models_loaded(self, models: list) -> None:
         self._load_models_btn.setEnabled(True)
@@ -1075,10 +1280,15 @@ class SettingsWindow(QDialog):
         if reply == QMessageBox.StandardButton.Yes:
             for k, v in DEFAULT_SETTINGS.items():
                 self._settings.set(k, list(v) if isinstance(v, list) else v)
-            self._populate_ui_from_settings()
+            self._populating = True
+            try:
+                self._populate_ui_from_settings()
+            finally:
+                self._populating = False
+            self._mark_dirty()
             QMessageBox.information(self, "Done", "Settings have been reset to defaults.")
 
-    def _save_and_close(self) -> None:
+    def _save_settings(self) -> None:
         self._settings.set("mode", str(self._mode_combo.currentData()))
         self._settings.set("capsule_style", str(self._capsule_style_combo.currentData()))
         self._settings.set("opacity", self._opacity_slider.value() / 100.0)
@@ -1114,9 +1324,18 @@ class SettingsWindow(QDialog):
         font_data = self._overlay_font_combo.currentData()
         self._settings.set("overlay_font_size", int(font_data) if font_data else 13)
         self._settings.set(
+            "overlay_max_height", int(self._overlay_max_height_spin.value())
+        )
+        self._settings.set(
             "overlay_auto_dismiss_seconds", self._overlay_dismiss_slider.value()
         )
 
         self._settings.save()
         self.saved.emit()
-        self.close()
+
+    def _save_and_close(self) -> None:
+        self._save_settings()
+        self._set_dirty(False)
+        # accept() closes with Accepted; app ignores the exec() result
+        # (exec + _settings_win=None unconditionally), so this is safe.
+        self.accept()

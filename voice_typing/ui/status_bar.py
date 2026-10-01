@@ -1,8 +1,11 @@
 # voice_typing/ui/status_bar.py
 from __future__ import annotations
 
+import logging
 import math
 from typing import Callable
+
+log = logging.getLogger(__name__)
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -37,7 +40,66 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from voice_typing.config.settings import get_asset_path
-from voice_typing.ui._theme import MENU_STYLESHEET
+from voice_typing.ui._theme import (
+    MENU_STYLESHEET,
+    CAPSULE_HEIGHT as THEME_CAPSULE_HEIGHT,
+    COLOR_ERROR_DEAD,
+    COLOR_LISTENING,
+    COLOR_PROCESSING,
+    COLOR_READY,
+    COLOR_RECONNECTING,
+    COLOR_TEXT_PRIMARY,
+    FONT_FAMILY,
+    FONT_SIZE_STATUS,
+    FONT_WEIGHT_STATUS,
+    OPACITY_DEFAULT,
+    OPACITY_IDLE_WAVE_DIM,
+    RADIUS_CAPSULE as THEME_RADIUS_CAPSULE,
+    TOUCH_TARGET_MIN,
+    capsule_stylesheet,
+    control_button_stylesheet,
+)
+
+
+# Canonical capsule states with legacy aliases.
+# ready -> idle, error -> error-dead. processing is retained as its own state.
+STATE_ALIASES = {
+    "ready": "idle",
+    "error": "error-dead",
+}
+
+STATE_COLORS = {
+    "idle": COLOR_READY,
+    "listening": COLOR_LISTENING,
+    "processing": COLOR_PROCESSING,
+    "reconnecting": COLOR_RECONNECTING,
+    "error-dead": COLOR_ERROR_DEAD,
+}
+
+STATE_TITLES = {
+    "idle": "Ready",
+    "listening": "Listening...",
+    "processing": "Processing...",
+    "reconnecting": "Reconnecting...",
+    "error-dead": "Error - check connection",
+}
+
+STATE_MIC_TOOLTIPS = {
+    "idle": "Ready - press hotkey or click mic to record",
+    "listening": "Stop recording",
+    "processing": "Processing - please wait...",
+    "reconnecting": "Reconnecting - please wait, recording will resume automatically",
+    "error-dead": "Connection failed - check API key and network, then press hotkey to retry",
+}
+
+# Mic is non-interactive while the engine cannot record.
+MIC_DISABLED_STATES = frozenset({"reconnecting", "error-dead"})
+
+# Border highlight draws attention to live/transient states only.
+HIGHLIGHT_STATES = frozenset({"listening", "reconnecting"})
+
+# Pulse draws attention to live/transient states only.
+PULSE_STATES = frozenset({"listening", "reconnecting"})
 
 
 class StatusBarSignals(QObject):
@@ -61,7 +123,7 @@ class _ControlWindow(QWidget):
 
 
 class _WaveVisualizer(QWidget):
-    """Modern 5-bar animated audio wave visualizer."""
+    """Modern 5-bar level meter; active while audio flows (no idle capture)."""
 
     BAR_COUNT = 5
     BAR_WIDTH = 3
@@ -73,10 +135,10 @@ class _WaveVisualizer(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._level = 0.0
-        self._color = QColor("#34a853")
+        self._color = QColor(COLOR_READY)
         width = self.BAR_COUNT * self.BAR_WIDTH + (self.BAR_COUNT - 1) * self.BAR_GAP
         self.setFixedSize(width, self.MAX_BAR_HEIGHT)
-        self.setToolTip("Audio waveform")
+        self.setToolTip("Level meter active while audio flows")
 
     def set_level(self, value: float) -> None:
         self._level = max(0.0, min(1.0, value))
@@ -176,13 +238,15 @@ class StatusBar:
         self._state_dot: QLabel | None = None
         self._mic_button: QPushButton | None = None
         self._wave: _WaveVisualizer | None = None
+        self._wave_opacity: QGraphicsOpacityEffect | None = None
         self._status_label: QLabel | None = None
         self._menu_button: QPushButton | None = None
         self._tray_btn: QPushButton | None = None
         self._recording = False
         self._hovered = False
         self._level = 0.0
-        self._state_color = "#34a853"
+        self._state = "idle"
+        self._state_color = COLOR_READY
         self._pulse_effect: QGraphicsOpacityEffect | None = None
         self._pulse_anim: QVariantAnimation | None = None
         self._fade_in_anim: QPropertyAnimation | None = None
@@ -191,9 +255,24 @@ class StatusBar:
         self._hotkey_name = "F9"
         self._on_position_changed = on_position_changed
         self._saved_position = saved_position
-        self._opacity: float = 0.94
+        self._opacity: float = OPACITY_DEFAULT
         self._language: str = "auto"
         self._overlay_enabled: bool = True
+        self._pending_text: str = ""
+        # Geometry parity with theme tokens is verified by tests
+        # (test_theme_tokens / test_status_bar); log instead of asserting
+        # so a mismatch never crashes the UI at runtime.
+        if self.CAPSULE_HEIGHT != THEME_CAPSULE_HEIGHT:
+            log.warning(
+                "StatusBar CAPSULE_HEIGHT %s != theme %s; using class value",
+                self.CAPSULE_HEIGHT,
+                THEME_CAPSULE_HEIGHT,
+            )
+        if THEME_RADIUS_CAPSULE != 18:
+            log.warning(
+                "Theme RADIUS_CAPSULE changed (%s); capsule styling may drift",
+                THEME_RADIUS_CAPSULE,
+            )
 
     @property
     def style(self) -> str:
@@ -227,7 +306,8 @@ class StatusBar:
 
     def _make_mic_pixmap(self, color: str) -> QPixmap:
         pixmap = QPixmap(18, 18)
-        pixmap.fill(QColor("transparent"))
+        transparent = QColor(Qt.GlobalColor.transparent)
+        pixmap.fill(transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor(color), 1.5))
@@ -260,10 +340,7 @@ class StatusBar:
         self._capsule = capsule
         capsule.setObjectName("capsule")
         capsule.setCursor(Qt.CursorShape.OpenHandCursor)
-        capsule.setStyleSheet(
-            "#capsule { background-color: rgba(26, 27, 30, 0.95); "
-            "border-radius: 18px; border: 1px solid #3c4043; }"
-        )
+        capsule.setStyleSheet(capsule_stylesheet())
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(24)
         shadow.setOffset(0, 4)
@@ -275,20 +352,11 @@ class StatusBar:
         self._mic_button = QPushButton()
         self._mic_button.setIcon(QIcon(self._make_mic_pixmap(self._state_color)))
         self._mic_button.setIconSize(QSize(18, 18))
-        self._mic_button.setFixedSize(24, 24)
+        self._mic_button.setFixedSize(TOUCH_TARGET_MIN, TOUCH_TARGET_MIN)
         self._mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._mic_button.setToolTip("Start / Stop recording")
-        self._mic_button.setStyleSheet(
-            """
-            QPushButton {
-                background: transparent; color: #9aa0a6; border: none;
-                border-radius: 12px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.08); color: #e8eaed;
-            }
-            """
-        )
+        self._mic_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._mic_button.setToolTip(STATE_MIC_TOOLTIPS["idle"])
+        self._mic_button.setStyleSheet(control_button_stylesheet())
         self._mic_button.clicked.connect(self._on_toggle)
 
         self._pulse_effect = QGraphicsOpacityEffect(self._mic_button)
@@ -298,44 +366,34 @@ class StatusBar:
         self._wave = _WaveVisualizer()
         self._wave.set_color(self._state_color)
         self._wave.set_level(self._level)
+        self._wave_opacity = QGraphicsOpacityEffect(self._wave)
+        self._wave_opacity.setOpacity(OPACITY_IDLE_WAVE_DIM)
+        self._wave.setGraphicsEffect(self._wave_opacity)
 
         self._status_label = QLabel("")
         self._status_label.setMaximumWidth(100)
-        self._status_label.setStyleSheet("color: #e8eaed; font-size: 13px; font-weight: 500; font-family: 'Segoe UI', sans-serif;")
+        self._status_label.setStyleSheet(
+            f"color: {COLOR_TEXT_PRIMARY}; "
+            f"font-size: {FONT_SIZE_STATUS}px; "
+            f"font-weight: {FONT_WEIGHT_STATUS}; "
+            f"font-family: {FONT_FAMILY};"
+        )
 
         self._tray_btn = QPushButton("─")
         self._tray_btn.setObjectName("tray_btn")
-        self._tray_btn.setFixedSize(24, 24)
+        self._tray_btn.setFixedSize(TOUCH_TARGET_MIN, TOUCH_TARGET_MIN)
         self._tray_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tray_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._tray_btn.setToolTip("Minimize to tray")
-        self._tray_btn.setStyleSheet(
-            """
-            QPushButton {
-                background: transparent; color: #9aa0a6; border: none;
-                font-size: 14px; font-weight: bold; border-radius: 12px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 255, 255, 0.08); color: #e8eaed;
-            }
-            """
-        )
+        self._tray_btn.setStyleSheet(control_button_stylesheet())
         self._tray_btn.clicked.connect(self._minimize_to_tray)
 
         self._menu_button = QPushButton("⋯")
-        self._menu_button.setFixedSize(20, 20)
+        self._menu_button.setFixedSize(TOUCH_TARGET_MIN, TOUCH_TARGET_MIN)
         self._menu_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._menu_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._menu_button.setToolTip("Menu")
-        self._menu_button.setStyleSheet(
-            """
-            QPushButton {
-                background: transparent; color: #9aa0a6; border: none;
-                border-radius: 10px; font-size: 14px; font-weight: bold; padding-bottom: 2px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.08); color: #e8eaed;
-            }
-            """
-        )
+        self._menu_button.setStyleSheet(control_button_stylesheet())
         self._menu_button.clicked.connect(self._show_menu)
 
         row = QHBoxLayout(capsule)
@@ -353,6 +411,7 @@ class StatusBar:
         root.addWidget(capsule)
         self._update_hint()
         self._update_layout_for_state()
+        self._apply_state_visuals(self._state, self._pending_text)
         return win
 
     def _show_menu(self) -> None:
@@ -511,6 +570,7 @@ class StatusBar:
             self._mic_button = None
             self._pulse_effect = None
             self._wave = None
+            self._wave_opacity = None
             self._status_label = None
             self._menu_button = None
             self._tray_btn = None
@@ -544,12 +604,12 @@ class StatusBar:
             return
         geo = screen.availableGeometry()
         x = (geo.width() - self.EXPANDED_WIDTH) // 2 + geo.x()
-        y = geo.height() - self.CAPSULE_HEIGHT - 30 + geo.y()
+        y = geo.height() - self.CAPSULE_HEIGHT - CAPSULE_BOTTOM_MARGIN + geo.y()
         self._window.move(x, y)
 
     def update_recording_state(self, recording: bool) -> None:
         self._recording = recording
-        if self._mic_button is not None:
+        if self._mic_button is not None and self._mic_button.isEnabled():
             self._mic_button.setToolTip(
                 "Stop recording" if recording else "Start / Stop recording"
             )
@@ -557,39 +617,31 @@ class StatusBar:
             self._stop_pulse()
         self._update_layout_for_state()
 
-    def set_state(self, state: str, text: str = "") -> None:
-        colors = {
-            "ready": "#34a853",
-            "listening": "#ea4335",
-            "processing": "#fbbc04",
-            "reconnecting": "#fbbc04",
-            "error": "#9aa0a6",
-        }
-        titles = {
-            "ready": "Ready",
-            "listening": "Listening...",
-            "processing": "Processing...",
-            "reconnecting": "Reconnecting...",
-            "error": "Error",
-        }
-        color = colors.get(state, "#9aa0a6")
+    def _apply_state_visuals(self, canonical: str, text: str) -> None:
+        color = STATE_COLORS[canonical]
+        self._state = canonical
         self._state_color = color
         if self._capsule is not None:
-            if state in ("listening", "reconnecting"):
-                border_css = f"border: 1.5px solid {self._state_color};"
-            else:
-                border_css = "border: 1px solid #3c4043;"
-            self._capsule.setStyleSheet(
-                f"#capsule {{ background-color: rgba(26, 27, 30, 0.95); "
-                f"border-radius: 18px; {border_css} }}"
-            )
-        title = titles.get(state, state.title())
+            accent = color if canonical in HIGHLIGHT_STATES else None
+            self._capsule.setStyleSheet(capsule_stylesheet(accent))
+        title = STATE_TITLES[canonical]
         if self._mic_button is not None:
             self._mic_button.setIcon(QIcon(self._make_mic_pixmap(color)))
+            # Mic is disabled while the engine cannot record. The hotkey
+            # queue in WorkerThread stays active so a press during
+            # reconnect still auto-starts after recovery.
+            disabled = canonical in MIC_DISABLED_STATES
+            self._mic_button.setEnabled(not disabled)
+            self._mic_button.setToolTip(STATE_MIC_TOOLTIPS[canonical])
         if self._wave is not None:
             self._wave.set_color(color)
+        if self._wave_opacity is not None:
+            if canonical == "idle":
+                self._wave_opacity.setOpacity(OPACITY_IDLE_WAVE_DIM)
+            else:
+                self._wave_opacity.setOpacity(1.0)
         if self._status_label is not None:
-            if state == "ready" and not text:
+            if canonical == "idle" and not text:
                 self._update_hint()
             elif text:
                 shown = text if len(text) <= 60 else text[:57] + "..."
@@ -598,10 +650,25 @@ class StatusBar:
                 self._status_label.setText(title)
         if self._window is not None:
             self._window.setToolTip(text if text else title)
-        if state in ("listening", "reconnecting"):
+        if canonical in PULSE_STATES:
             self._start_pulse()
         else:
             self._stop_pulse()
+
+    def set_state(self, state: str, text: str = "") -> None:
+        key = (state or "").strip().lower()
+        key = STATE_ALIASES.get(key, key)
+        if key not in STATE_COLORS:
+            log.warning("Unknown status state %r; falling back to idle", state)
+            key = "idle"
+        if self._capsule is None and self._window is None:
+            # Pre-show: remember state + text so first build renders correctly.
+            self._state = key
+            self._state_color = STATE_COLORS[key]
+            self._pending_text = text
+            return
+        self._pending_text = text
+        self._apply_state_visuals(key, text)
 
     def hide(self) -> None:
         if self._window is not None:
@@ -621,3 +688,13 @@ class StatusBar:
         anim.finished.connect(self._finish_close)
         self._fade_out_anim = anim
         anim.start()
+
+
+# Module-level geometry exports for toast positioning (single source —
+# toast.py imports these instead of duplicating 36 + 30).
+# CAPSULE_HEIGHT mirrors StatusBar.CAPSULE_HEIGHT (parity with the
+# theme token is already verified in StatusBar.__init__ via log warning).
+# CAPSULE_BOTTOM_MARGIN mirrors the 30px bottom offset used in
+# StatusBar._move_bottom_center.
+CAPSULE_HEIGHT = StatusBar.CAPSULE_HEIGHT
+CAPSULE_BOTTOM_MARGIN = 30

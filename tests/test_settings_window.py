@@ -15,6 +15,23 @@ from voice_typing.config.settings import DEFAULT_SETTINGS, SettingsManager
 from voice_typing.ui.settings_window import SettingsWindow, _LiveMicTester, _normalize_model
 
 
+def _wait_until(predicate, timeout=10.0):
+    """Pump the offscreen event loop until predicate() or timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        QApplication.processEvents()
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        time.sleep(0.01)
+    try:
+        return bool(predicate())
+    except Exception:
+        return False
+
+
 @pytest.fixture(scope="module", autouse=True)
 def qapp():
     app = QApplication.instance()
@@ -218,19 +235,25 @@ def test_settings_window_api_key_test_callbacks(settings):
         win._test_api_key()
         mock_warn.assert_called_once()
 
-    # Test success callback
+    win._api_key_input.setText("test-key-1")
+    win._add_api_key()
+
+    # Test success callback (queue signal shape: key, ok, message)
     with patch.object(QMessageBox, "information") as mock_info:
-        win._on_api_key_tested(True, "Valid API Key")
+        win._on_queue_key_tested("test-key-1", True, "Valid API Key")
         assert "#34a853" in win._api_status.styleSheet()  # Green dot
         assert win._test_key_btn.isEnabled()
         mock_info.assert_called_once()
 
     # Test fail callback
     with patch.object(QMessageBox, "warning") as mock_warn:
-        win._on_api_key_tested(False, "Invalid API Key")
+        win._on_queue_key_tested("test-key-1", False, "Invalid API Key")
         assert "#ea4335" in win._api_status.styleSheet()  # Red dot
         assert win._test_key_btn.isEnabled()
         mock_warn.assert_called_once()
+
+    assert win._key_status["test-key-1"] == "invalid"
+    win._queue.shutdown()
 
 
 def test_settings_window_load_models_callbacks(settings):
@@ -429,44 +452,40 @@ def test_save_includes_pending_input_text(tmp_path):
 
 
 def test_test_all_keys_sequential(settings):
-    import voice_typing.ui.settings_window as sw_mod
-
+    """Test-All runs keys sequentially on the shared WorkerQueue."""
     win = SettingsWindow(settings)
-    win._api_key_input.setText("test-key-1")
-    win._add_api_key()
-    win._api_key_input.setText("test-key-2")
-    win._add_api_key()
+    try:
+        win._api_key_input.setText("test-key-1")
+        win._add_api_key()
+        win._api_key_input.setText("test-key-2")
+        win._add_api_key()
 
-    seen_keys = []
+        seen_keys = []
 
-    class _FakeSignal:
-        def __init__(self):
-            self._cb = None
+        def fake_fetch(key):
+            seen_keys.append(key)
+            return ["models/gemini-2.0-flash"]
 
-        def connect(self, cb):
-            self._cb = cb
+        finished = []
+        win._queue.test_all_finished.connect(lambda r: finished.append(list(r)))
+        with patch("voice_typing.ui.worker_queue.fetch_live_models", side_effect=fake_fetch), \
+             patch.object(QMessageBox, "information") as mock_info, \
+             patch.object(QMessageBox, "warning") as mock_warn:
+            win._test_all_keys()
+            assert _wait_until(lambda: len(finished) == 1)
 
-        def emit(self, *args):
-            self._cb(*args)
-
-    class _FakeTester:
-        def __init__(self, api_key):
-            self._api_key = api_key
-            self.finished = _FakeSignal()
-
-        def start(self):
-            seen_keys.append(self._api_key)
-            self.finished.emit(True, "ok")
-
-    with patch.object(sw_mod, "_ApiKeyTester", _FakeTester), \
-         patch.object(QMessageBox, "information") as mock_info, \
-         patch.object(QMessageBox, "warning") as mock_warn:
-        win._test_all_keys()
-
-    assert seen_keys == ["test-key-1", "test-key-2"]
-    assert "Valid" in win._api_status.text()
-    mock_info.assert_called_once()
-    mock_warn.assert_not_called()
+        assert seen_keys == ["test-key-1", "test-key-2"]
+        assert "Valid" in win._api_status.text()
+        mock_info.assert_called_once()
+        mock_warn.assert_not_called()
+        # Per-key dots green + masked indexed labels (raw keys never shown).
+        assert win._key_status == {"test-key-1": "valid", "test-key-2": "valid"}
+        item0 = win._api_keys_list.item(0)
+        assert "test-key-1" not in item0.text()
+        assert "(Key 1/2)" in item0.text()
+        assert item0.foreground().color().name() == "#34a853"
+    finally:
+        win._queue.shutdown()
 
 
 def test_test_all_keys_empty_warns(settings):
@@ -504,88 +523,67 @@ def test_reset_to_defaults_copies_mutable_list(settings):
     assert "fake-injected-key" not in DEFAULT_SETTINGS["api_keys"]
 
 
-def test_test_key_does_not_clobber_test_all_ref(settings):
-    import voice_typing.ui.settings_window as sw_mod
-
+def test_single_and_all_share_one_queue(settings):
+    """Phase D: one WorkerQueue serves single-test, test-all, model loads."""
     win = SettingsWindow(settings)
-    win._api_key_input.setText("test-key-1")
-    win._add_api_key()
-    assert win._test_all_tester is None
-    assert win._key_tester is None
+    try:
+        assert win._queue is not None
+        assert not hasattr(win, "_key_tester")
+        assert not hasattr(win, "_test_all_tester")
+        assert not hasattr(win, "_model_loader")
+        assert win._queue.busy is False
 
-    class _PendingTester:
-        def __init__(self, api_key):
-            self._api_key = api_key
-            self.finished = MagicMock()
-
-        def start(self):
-            pass
-
-        def isRunning(self):
-            return False
-
-        def wait(self, ms=0):
-            return True
-
-    pending_all = _PendingTester("test-key-1")
-    win._test_all_queue = ["test-key-1"]
-    win._test_all_tester = pending_all
-    win._test_all_btn.setEnabled(False)
-
-    single = _PendingTester("test-single-key")
-    win._api_key_input.setText("test-single-key")
-    with patch.object(sw_mod, "_ApiKeyTester", return_value=single):
-        win._test_api_key()
-
-    assert win._key_tester is single
-    assert win._test_all_tester is pending_all
-    assert win._test_all_tester._api_key == "test-key-1"
+        finished = []
+        win._queue.test_all_finished.connect(lambda r: finished.append(True))
+        with patch("voice_typing.ui.worker_queue.fetch_live_models",
+                   return_value=["models/x"]), \
+             patch.object(QMessageBox, "information"), \
+             patch.object(QMessageBox, "warning"):
+            win._queue.test_all(["k1"])
+            assert _wait_until(lambda: finished)
+        assert win._queue.busy is False
+    finally:
+        win._queue.shutdown()
 
 
-def test_close_aborts_test_all_queue_and_resets_buttons(settings):
+def test_close_shuts_down_queue_and_resets_buttons(settings):
+    """closeEvent cancels the queue, stops its thread, resets buttons."""
     from PySide6.QtGui import QCloseEvent
 
     win = SettingsWindow(settings)
-    pending_all = MagicMock()
-    pending_all.isRunning.return_value = False
-    pending_single = MagicMock()
-    pending_single.isRunning.return_value = False
-    win._test_all_queue = ["test-key-1", "test-key-2"]
-    win._test_all_tester = pending_all
-    win._key_tester = pending_single
-    win._test_all_btn.setEnabled(False)
-    win._test_all_btn.setText("Testing...")
-    win._test_key_btn.setEnabled(False)
-    win._test_key_btn.setText("Testing...")
+    win._api_key_input.setText("k1")
+    win._add_api_key()
+    done = []
+    win._queue.test_all_finished.connect(lambda r: done.append(True))
+    with patch("voice_typing.ui.worker_queue.fetch_live_models",
+               return_value=["models/x"]), \
+         patch.object(QMessageBox, "information"):
+        win._test_all_keys()
+        assert _wait_until(lambda: done)
+    assert win._queue._thread.isRunning()
+    win._set_dirty(False)  # adding a key marks dirty; isolate queue teardown
 
     win.closeEvent(QCloseEvent())
 
-    assert win._test_all_queue == []
-    assert win._test_all_tester is None
-    assert win._key_tester is None
+    assert not win._queue._thread.isRunning()
     assert win._test_all_btn.isEnabled()
     assert win._test_all_btn.text() == "Test All"
     assert win._test_key_btn.isEnabled()
     assert win._test_key_btn.text() == "Test Key"
+    assert win._load_models_btn.isEnabled()
+    assert win._load_models_btn.text() == "Load models"
 
 
-def test_close_aborts_model_loader_and_resets_button(settings):
-    """closeEvent disconnects _model_loader signals and resets Load button."""
+def test_close_resets_load_models_button(settings):
+    """closeEvent re-enables a stuck Load button even with no queue work."""
     from PySide6.QtGui import QCloseEvent
 
     win = SettingsWindow(settings)
-    loader = MagicMock()
-    loader.isRunning.return_value = True
-    win._model_loader = loader
     win._load_models_btn.setEnabled(False)
     win._load_models_btn.setText("Loading...")
 
     win.closeEvent(QCloseEvent())
 
-    assert win._model_loader is None
-    loader.finished.disconnect.assert_called_once()
-    loader.failed.disconnect.assert_called_once()
-    loader.wait.assert_called_once_with(500)
     assert win._load_models_btn.isEnabled()
     assert win._load_models_btn.text() == "Load models"
 
@@ -610,3 +608,307 @@ def test_close_aborts_mic_tester_and_resets_ui(settings):
     mic.wait.assert_called_once_with(300)
     assert win._test_mic_btn.text() == "🎤 Test Mic"
     assert win._mic_level_bar.value() == 0
+
+
+def test_overlay_max_height_round_trip(tmp_path):
+    """M4: max-height spinbox binds overlay_max_height (load + save)."""
+    from voice_typing.config.settings import SettingsManager
+
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("overlay_max_height", 450)
+    mgr.save()
+    win = SettingsWindow(mgr)
+    assert win._overlay_max_height_spin.value() == 450
+    win._overlay_max_height_spin.setValue(500)
+    win._save_and_close()
+    assert mgr.get("overlay_max_height") == 500
+    # Reload persists.
+    mgr2 = SettingsManager(tmp_path / "settings.json")
+    mgr2.load()
+    assert mgr2.get("overlay_max_height") == 500
+
+
+def test_overlay_max_height_clamped_on_load(tmp_path):
+    from voice_typing.config.settings import SettingsManager
+
+    mgr = SettingsManager(tmp_path / "settings.json")
+    mgr.load()
+    mgr.set("overlay_max_height", 9999)
+    win = SettingsWindow(mgr)
+    assert win._overlay_max_height_spin.value() == 600
+
+
+# ── UX Phase D: sidebar / search ─────────────────────────────────────
+
+def test_sidebar_pages_and_selection(settings):
+    win = SettingsWindow(settings)
+    try:
+        assert win._sidebar.count() == 6
+        assert win._stack.count() == 6
+        assert win._stack.currentIndex() == 0
+        assert win.select_page("Speech")
+        assert win._stack.currentIndex() == 2
+        assert win.select_page("history")
+        assert win._stack.currentIndex() == 4
+        assert win.select_page("AI Keys")
+        assert win._stack.currentIndex() == 3
+        assert not win.select_page("Nope")
+    finally:
+        win._queue.shutdown()
+
+
+def test_search_filters_page_titles_only(settings):
+    win = SettingsWindow(settings)
+    try:
+        win._search_box.setText("hot")
+        visible = [
+            win._sidebar.item(i).text()
+            for i in range(win._sidebar.count())
+            if not win._sidebar.isRowHidden(i)
+        ]
+        assert visible == ["Hotkey"]
+        # Control-level text must NOT match (page-title only).
+        win._search_box.setText("overlay")
+        visible = [
+            win._sidebar.item(i).text()
+            for i in range(win._sidebar.count())
+            if not win._sidebar.isRowHidden(i)
+        ]
+        assert visible == []
+        win._search_box.clear()
+        assert all(
+            not win._sidebar.isRowHidden(i)
+            for i in range(win._sidebar.count())
+        )
+    finally:
+        win._queue.shutdown()
+
+
+# ── UX Phase D: dirty tracking / Ctrl+S / close-confirm ──────────────
+
+def test_dirty_tracking_and_save_shortcut(settings):
+    win = SettingsWindow(settings)
+    try:
+        assert not win.is_dirty
+        assert "*" not in win.windowTitle()
+        win._mode_combo.setCurrentIndex(1)
+        assert win.is_dirty
+        assert win.windowTitle().endswith("*")
+        assert win._save_shortcut is not None
+        # Ctrl+S saves + clears dirty.
+        win._save_shortcut.activated.emit()
+        assert not win.is_dirty
+        assert "*" not in win.windowTitle()
+        assert settings.get("mode") == "toggle"
+    finally:
+        win._queue.shutdown()
+
+
+def test_close_confirm_cancel_keeps_going(settings):
+    from PySide6.QtGui import QCloseEvent
+
+    win = SettingsWindow(settings)
+    try:
+        win._mode_combo.setCurrentIndex(1)
+        assert win.is_dirty
+        event = QCloseEvent()
+        with patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ):
+            win.closeEvent(event)
+        assert not event.isAccepted()
+        assert win.is_dirty
+        assert settings.get("mode") == "push_to_talk"
+    finally:
+        win._queue.shutdown()
+
+
+def test_close_confirm_discard_closes_without_saving(settings):
+    from PySide6.QtGui import QCloseEvent
+
+    win = SettingsWindow(settings)
+    win._mode_combo.setCurrentIndex(1)
+    event = QCloseEvent()
+    with patch.object(
+        QMessageBox, "question",
+        return_value=QMessageBox.StandardButton.Discard,
+    ):
+        win.closeEvent(event)
+    assert event.isAccepted()
+    assert settings.get("mode") == "push_to_talk"
+    win._queue.shutdown()
+
+
+def test_close_confirm_save_persists(settings):
+    from PySide6.QtGui import QCloseEvent
+
+    win = SettingsWindow(settings)
+    win._mode_combo.setCurrentIndex(1)
+    event = QCloseEvent()
+    with patch.object(
+        QMessageBox, "question",
+        return_value=QMessageBox.StandardButton.Save,
+    ):
+        win.closeEvent(event)
+    assert event.isAccepted()
+    assert settings.get("mode") == "toggle"
+    assert not win.is_dirty
+    win._queue.shutdown()
+
+
+def test_history_selection_does_not_mark_dirty(settings):
+    """Dirty = settings controls only (not history selection)."""
+    win = SettingsWindow(settings)
+    try:
+        win.history_panel.set_history(["one", "two"])
+        assert win.history_panel.count() == 2
+        win.history_panel._list.setCurrentRow(0)
+        assert not win.is_dirty
+        # Newest-first with full text in UserRole.
+        assert win.history_panel._list.item(0).data(
+            Qt.ItemDataRole.UserRole) == "two"
+    finally:
+        win._queue.shutdown()
+
+
+# ── UX Phase D: per-key dots + queue cancel ──────────────────────────
+
+def test_per_key_dots_masked_indexed(settings):
+    win = SettingsWindow(settings)
+    try:
+        for k in ("alpha-key-1", "beta-key-2"):
+            win._api_key_input.setText(k)
+            win._add_api_key()
+        assert win._key_status == {
+            "alpha-key-1": "untested", "beta-key-2": "untested"}
+        item = win._api_keys_list.item(0)
+        assert "alpha-key-1" not in item.text()
+        assert "(Key 1/2)" in item.text()
+        assert item.foreground().color().name() == "#9aa0a6"  # gray
+        win._set_key_status("alpha-key-1", "testing")
+        assert win._api_keys_list.item(0).foreground().color().name() == "#fbbc04"
+    finally:
+        win._queue.shutdown()
+
+
+def test_single_key_queue_round_trip(settings):
+    win = SettingsWindow(settings)
+    try:
+        win._api_key_input.setText("solo-key")
+        win._add_api_key()
+        seen = []
+        win._queue.key_tested.connect(lambda k, ok, msg: seen.append((k, ok)))
+        with patch("voice_typing.ui.worker_queue.fetch_live_models",
+                   return_value=["models/x"]), \
+             patch.object(QMessageBox, "information"):
+            win._test_api_key()
+            assert _wait_until(lambda: seen)
+        assert seen == [("solo-key", True)]
+        assert win._key_status["solo-key"] == "valid"
+        assert "Valid" in win._api_status.text()
+    finally:
+        win._queue.shutdown()
+
+
+def test_queue_cancel_emits_partial_results(settings):
+    """cancel_all during test-all emits the partial result list."""
+    win = SettingsWindow(settings)
+    try:
+        for k in ("k1", "k2", "k3"):
+            win._api_key_input.setText(k)
+            win._add_api_key()
+        finished = []
+        win._queue.test_all_finished.connect(lambda r: finished.append(list(r)))
+
+        def fake_fetch(key):
+            if key == "k1":
+                win._queue.cancel_all()
+            return ["models/x"]
+
+        with patch("voice_typing.ui.worker_queue.fetch_live_models",
+                   side_effect=fake_fetch), \
+             patch.object(QMessageBox, "warning"), \
+             patch.object(QMessageBox, "information"):
+            win._test_all_keys()
+            assert _wait_until(lambda: finished)
+        assert len(finished) == 1
+        assert 1 <= len(finished[0]) < 3
+        assert finished[0][0][0] == "k1"
+        assert finished[0][0][1] is True
+    finally:
+        win._queue.shutdown()
+
+
+# ── UX Phase D: history panel + wizard relaunch ──────────────────────
+
+def test_history_panel_copy_reinject_clear():
+    from voice_typing.ui.history_panel import HistoryPanel
+
+    panel = HistoryPanel()
+    panel.set_history(["first", "second"])
+    assert panel.count() == 2
+    panel._list.setCurrentRow(0)
+    assert panel.selected_text() == "second"
+    panel._copy_selected()
+    assert QApplication.clipboard().text() == "second"
+    got = []
+    panel.re_inject.connect(got.append)
+    panel._reinject_btn.click()
+    assert got == ["second"]
+    cleared = []
+    panel.clear_history.connect(lambda: cleared.append(True))
+    panel._clear_btn.click()
+    assert cleared == [True]
+
+
+def test_history_panel_shows_all_20_newest_first():
+    from voice_typing.ui.history_panel import HistoryPanel
+
+    panel = HistoryPanel()
+    items = [f"item {i}" for i in range(25)]
+    panel.set_history(items)
+    assert panel.count() == 20
+    assert panel._list.item(0).data(Qt.ItemDataRole.UserRole) == "item 24"
+    # Display is truncated for long text; full text stays in UserRole.
+    panel.set_history(["x" * 200])
+    assert len(panel._list.item(0).text()) < 200
+    assert panel._list.item(0).data(Qt.ItemDataRole.UserRole) == "x" * 200
+
+
+def test_about_page_has_wizard_relaunch(settings):
+    from PySide6.QtWidgets import QDialog
+
+    win = SettingsWindow(settings)
+    try:
+        assert win._wizard_btn is not None
+        with patch("voice_typing.ui.setup_wizard.SetupWizard") as MockWiz:
+            inst = MockWiz.return_value
+            inst.exec.return_value = QDialog.DialogCode.Rejected
+            win._open_setup_wizard()
+            inst.exec.assert_called_once()
+            assert not win.is_dirty
+    finally:
+        win._queue.shutdown()
+
+
+def test_wizard_accept_applies_to_ui(settings):
+    from PySide6.QtWidgets import QDialog
+
+    win = SettingsWindow(settings)
+    try:
+        with patch("voice_typing.ui.setup_wizard.SetupWizard") as MockWiz:
+            inst = MockWiz.return_value
+            inst.exec.return_value = QDialog.DialogCode.Accepted
+            inst.keys.return_value = ["wk1"]
+            inst.language.return_value = "thai"
+            inst.hotkey.return_value = 0x79
+            inst.microphone_device_id.return_value = None
+            win._open_setup_wizard()
+        assert win._collect_keys_from_ui() == ["wk1"]
+        assert win._lang_combo.currentIndex() == 1
+        assert win._hotkey_combo.currentData() == 0x79
+        assert win.is_dirty
+    finally:
+        win._queue.shutdown()

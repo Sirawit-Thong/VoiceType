@@ -160,9 +160,12 @@ class TestAddPartial:
         assert "Streaming text" in html
 
     def test_add_partial_dim_color_in_rendered_html(self, visible_overlay):
+        # UX Phase C: partial renders in overlay blue, not legacy dim gray.
+        from voice_typing.ui import _theme as theme
+
         visible_overlay.add_partial("dim text")
         html = visible_overlay._text_edit.toHtml()
-        assert _TEXT_DIM in html
+        assert theme.COLOR_OVERLAY_PARTIAL_BLUE in html
 
 
 # ---------------------------------------------------------------------------
@@ -230,17 +233,11 @@ class TestSetEnabled:
         overlay.add_partial("Should not appear")
         assert overlay._segments == []
 
-    def test_add_final_no_guard_when_disabled(self, visible_overlay):
-        """NOTE: add_final() currently has no _enabled guard (unlike add_partial()).
-        It still renders even when disabled — this documents current behaviour."""
-        visible_overlay.set_enabled(False)
-        visible_overlay.add_final("Should appear in segments")
-        # add_final does NOT check _enabled — this is a known inconsistency
-        assert len(visible_overlay._segments) == 1
-        # Restore for clean teardown
-        visible_overlay.set_enabled(True)
-        visible_overlay.close()
-        QApplication.processEvents()
+    def test_add_final_noop_when_disabled(self, overlay):
+        """M1: add_final() honors _enabled just like add_partial()."""
+        overlay.set_enabled(False)
+        overlay.add_final("Should not appear")
+        assert overlay._segments == []
 
     def test_show_noop_when_disabled(self, overlay):
         overlay.set_enabled(False)
@@ -558,3 +555,413 @@ class TestRendering:
         visible_overlay.close()
         QApplication.processEvents()
         assert visible_overlay._segments == []
+
+
+# ---------------------------------------------------------------------------
+# M4: theme tokens + accessible close button
+# ---------------------------------------------------------------------------
+
+class TestThemeTokensAndCloseButton:
+    def test_overlay_imports_theme_tokens(self):
+        import voice_typing.ui.transcript_overlay as ov_mod
+        from voice_typing.ui import _theme as theme
+
+        assert ov_mod._BG_COLOR == theme.COLOR_OVERLAY_BG
+        assert ov_mod._BORDER_COLOR == theme.COLOR_OVERLAY_BORDER
+        assert ov_mod._TEXT_BRIGHT == theme.COLOR_OVERLAY_TEXT_BRIGHT
+        assert ov_mod._TEXT_DIM == theme.COLOR_OVERLAY_TEXT_DIM
+        assert ov_mod._HOVER_BG == theme.COLOR_OVERLAY_HOVER_BG
+
+    def test_no_hardcoded_hex_in_overlay(self):
+        import pathlib
+        import re
+
+        text = pathlib.Path("voice_typing/ui/transcript_overlay.py").read_text(
+            encoding="utf-8"
+        )
+        assert re.findall(r"#[0-9a-fA-F]{3,8}\b", text) == []
+
+    def test_close_button_meets_touch_target_and_focus(self, visible_overlay):
+        from PySide6.QtCore import Qt
+
+        btn = visible_overlay._close_button
+        assert btn is not None
+        assert btn.width() >= 28 and btn.height() >= 28
+        assert btn.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert ":focus" in btn.styleSheet()
+
+
+# ---------------------------------------------------------------------------
+# UX Phase C: partial blue + caret blink, finals white
+# ---------------------------------------------------------------------------
+
+class TestPhaseCPartialCaret:
+    def test_partial_renders_blue(self, visible_overlay):
+        from voice_typing.ui import _theme as theme
+
+        visible_overlay.add_partial("streaming")
+        html = visible_overlay._text_edit.toHtml()
+        assert theme.COLOR_OVERLAY_PARTIAL_BLUE in html
+
+    def test_final_renders_bright_not_blue(self, visible_overlay):
+        from voice_typing.ui import _theme as theme
+
+        visible_overlay.add_final("done")
+        html = visible_overlay._text_edit.toHtml()
+        assert theme.COLOR_OVERLAY_TEXT_BRIGHT in html
+
+    def test_caret_timer_exists_and_interval(self, visible_overlay):
+        from voice_typing.ui import _theme as theme
+
+        assert visible_overlay._caret_timer is not None
+        assert visible_overlay._caret_timer.interval() == theme.OVERLAY_CARET_BLINK_MS == 530
+
+    def test_caret_blink_toggles_and_rerenders(self, visible_overlay):
+        visible_overlay.add_partial("live")
+        before = visible_overlay._caret_visible
+        visible_overlay._on_caret_blink()
+        assert visible_overlay._caret_visible is not before
+
+    def test_caret_absent_without_partial(self, visible_overlay):
+        from voice_typing.ui import _theme as theme
+
+        visible_overlay.add_final("only final")
+        visible_overlay._caret_visible = True
+        visible_overlay._render_segments()
+        html = visible_overlay._text_edit.toHtml()
+        assert theme.COLOR_OVERLAY_CARET not in html
+
+    def test_overlay_imports_phase_c_tokens(self):
+        import voice_typing.ui.transcript_overlay as ov_mod
+        from voice_typing.ui import _theme as theme
+
+        assert ov_mod._PARTIAL_BLUE == theme.COLOR_OVERLAY_PARTIAL_BLUE
+        assert ov_mod._CARET_COLOR == theme.COLOR_OVERLAY_CARET
+        assert ov_mod._PROGRESS_BG == theme.COLOR_OVERLAY_PROGRESS_BG
+        assert ov_mod._PROGRESS_FILL == theme.COLOR_OVERLAY_PROGRESS_FILL
+
+
+# ---------------------------------------------------------------------------
+# UX Phase C: pin (suppress dismiss) + determinate progress + pause/resume
+# ---------------------------------------------------------------------------
+
+class TestPhaseCPinProgress:
+    def test_default_unpinned(self, overlay):
+        assert overlay.is_pinned is False
+
+    def test_set_pinned_updates_state_and_button(self, visible_overlay):
+        received = []
+        visible_overlay.signals.pin_toggled.connect(received.append)
+        visible_overlay.set_pinned(True)
+        assert visible_overlay.is_pinned is True
+        assert visible_overlay._pin_button.isChecked() is True
+        assert received == [True]
+        visible_overlay.set_pinned(False)
+        assert visible_overlay.is_pinned is False
+        assert received == [True, False]
+
+    def test_pin_button_is_checkable(self, visible_overlay):
+        assert visible_overlay._pin_button.isCheckable()
+
+    def test_pinned_suppresses_auto_dismiss(self, visible_overlay):
+        visible_overlay.set_pinned(True)
+        visible_overlay.start_auto_dismiss()
+        assert (
+            visible_overlay._auto_dismiss_timer is None
+            or not visible_overlay._auto_dismiss_timer.isActive()
+        )
+        assert visible_overlay._progress_active is False
+
+    def test_unpinned_starts_determinate_progress(self, visible_overlay):
+        visible_overlay.set_pinned(False)
+        visible_overlay.start_auto_dismiss()
+        assert visible_overlay._progress_active is True
+        assert visible_overlay._progress_timer is not None
+        assert visible_overlay._progress_timer.interval() == 50
+        assert visible_overlay._progress_bar.maximum() == visible_overlay._progress_total_ms
+        # 3px bar visible while unpinned countdown runs.
+        assert visible_overlay._progress_bar.isVisible()
+
+    def test_progress_bar_hidden_when_pinned(self, visible_overlay):
+        visible_overlay.set_pinned(False)
+        visible_overlay.start_auto_dismiss()
+        assert visible_overlay._progress_bar.isVisible()
+        visible_overlay.set_pinned(True)
+        assert not visible_overlay._progress_bar.isVisible()
+
+    def test_progress_bar_height_3px(self, visible_overlay):
+        from voice_typing.ui import _theme as theme
+
+        assert theme.OVERLAY_PROGRESS_HEIGHT == 3
+        assert visible_overlay._progress_bar.maximumHeight() == 3 or \
+            visible_overlay._progress_bar.height() <= 32  # offscreen layout tolerance
+        assert "min-height: 3px" in visible_overlay._progress_bar.styleSheet() or \
+            f"{theme.OVERLAY_PROGRESS_HEIGHT}px" in visible_overlay._progress_bar.styleSheet()
+
+    def test_pause_resume_progress(self, visible_overlay):
+        visible_overlay.set_pinned(False)
+        visible_overlay.start_auto_dismiss()
+        visible_overlay.pause()
+        assert visible_overlay._progress_paused is True
+        visible_overlay.resume()
+        assert visible_overlay._progress_paused is False
+
+    def test_pause_resume_safe_when_idle(self, overlay):
+        overlay.pause()  # must not crash
+        overlay.resume()  # must not crash
+        assert overlay._progress_active is False
+
+    def test_hover_pauses_and_resumes(self, visible_overlay):
+        visible_overlay.set_pinned(False)
+        visible_overlay.start_auto_dismiss()
+        visible_overlay._on_hover_changed(True)
+        assert visible_overlay._progress_paused is True
+        visible_overlay._on_hover_changed(False)
+        assert visible_overlay._progress_paused is False
+
+
+# ---------------------------------------------------------------------------
+# UX Phase C: copy finals-only + edit-before-inject
+# ---------------------------------------------------------------------------
+
+class TestPhaseCCopyEdit:
+    def test_copy_button_exists(self, visible_overlay):
+        assert visible_overlay._copy_button is not None
+
+    def test_copy_finals_only(self, visible_overlay, qapp):
+        from unittest.mock import MagicMock
+
+        visible_overlay.add_final("hello")
+        visible_overlay.add_partial("streaming ignored")
+        visible_overlay.add_final("world")
+        mock_clip = MagicMock()
+        orig = QApplication.clipboard
+        QApplication.clipboard = staticmethod(lambda *a, **k: mock_clip)
+        try:
+            text = visible_overlay.copy_to_clipboard()
+        finally:
+            QApplication.clipboard = orig
+        assert text == "hello world"
+        mock_clip.setText.assert_called_once_with("hello world")
+
+    def test_copy_empty_when_no_finals(self, visible_overlay, qapp):
+        from unittest.mock import MagicMock
+
+        visible_overlay.add_partial("only partial")
+        mock_clip = MagicMock()
+        orig = QApplication.clipboard
+        QApplication.clipboard = staticmethod(lambda *a, **k: mock_clip)
+        try:
+            text = visible_overlay.copy_to_clipboard()
+        finally:
+            QApplication.clipboard = orig
+        assert text == ""
+        mock_clip.setText.assert_not_called()
+
+    def test_copy_clicked_signal(self, visible_overlay, qapp):
+        from unittest.mock import MagicMock
+
+        received = []
+        visible_overlay.signals.copy_clicked.connect(lambda: received.append(True))
+        mock_clip = MagicMock()
+        orig = QApplication.clipboard
+        QApplication.clipboard = staticmethod(lambda *a, **k: mock_clip)
+        try:
+            visible_overlay.add_final("abc")
+            visible_overlay._on_copy_clicked()
+        finally:
+            QApplication.clipboard = orig
+        assert received == [True]
+
+    def test_edit_line_exists(self, visible_overlay):
+        from PySide6.QtWidgets import QLineEdit
+
+        assert isinstance(visible_overlay._edit_line, QLineEdit)
+
+    def test_edit_commit_replaces_finals_and_emits(self, visible_overlay):
+        received = []
+        visible_overlay.signals.edit_committed.connect(received.append)
+        visible_overlay.add_final("old one")
+        visible_overlay.add_final("old two")
+        visible_overlay.add_partial("stale partial")
+        visible_overlay._edit_line.setText("  edited text  ")
+        visible_overlay._on_edit_return_pressed()
+        assert received == ["edited text"]
+        assert visible_overlay._segments == [("edited text", "final")]
+        assert visible_overlay._edit_line.text() == ""
+
+    def test_edit_empty_ignored(self, visible_overlay):
+        received = []
+        visible_overlay.signals.edit_committed.connect(received.append)
+        visible_overlay.add_final("keep")
+        visible_overlay._edit_line.setText("   ")
+        visible_overlay._on_edit_return_pressed()
+        assert received == []
+        assert visible_overlay._segments == [("keep", "final")]
+
+
+# ---------------------------------------------------------------------------
+# UX Phase C: geometry (top-edge drag + SE grip + debounced signal)
+# ---------------------------------------------------------------------------
+
+class TestPhaseCGeometry:
+    def test_keeps_show_without_activating(self, visible_overlay):
+        from PySide6.QtCore import Qt
+
+        assert visible_overlay._window.testAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating
+        )
+
+    def test_size_grip_exists(self, visible_overlay):
+        from PySide6.QtWidgets import QSizeGrip
+
+        assert isinstance(visible_overlay._size_grip, QSizeGrip)
+
+    def test_set_geometry_from_settings_applies(self, visible_overlay):
+        visible_overlay.set_geometry_from_settings(10, 20, 450, 200)
+        geo = visible_overlay._window.geometry()
+        assert (geo.x(), geo.y()) == (10, 20)
+        assert (geo.width(), geo.height()) == (450, 200)
+
+    def test_set_geometry_pending_before_show(self, qapp):
+        ov = TranscriptOverlay()
+        try:
+            ov.set_geometry_from_settings(11, 22, 400, 150)
+            assert ov._window is None
+            ov.show()
+            from PySide6.QtTest import QTest
+            QTest.qWait(50)
+            QApplication.processEvents()
+            geo = ov._window.geometry()
+            assert (geo.x(), geo.y()) == (11, 22)
+        finally:
+            ov.close()
+            QApplication.processEvents()
+
+    def test_geometry_changed_debounced(self, visible_overlay, qapp):
+        from PySide6.QtTest import QTest
+
+        received = []
+        visible_overlay.signals.geometry_changed.connect(
+            lambda x, y, w, h: received.append((x, y, w, h))
+        )
+        visible_overlay._window.move(40, 50)
+        visible_overlay._window.move(41, 51)
+        QApplication.processEvents()
+        assert received == []  # debounced, not immediate
+        QTest.qWait(450)
+        QApplication.processEvents()
+        assert len(received) == 1
+        assert received[0][:2] == (41, 51)
+
+    def test_close_stops_timers(self, visible_overlay):
+        visible_overlay.set_pinned(False)
+        visible_overlay.start_auto_dismiss()
+        assert visible_overlay._caret_timer is not None
+        visible_overlay.close()
+        QApplication.processEvents()
+        assert visible_overlay._window is None
+        assert visible_overlay._caret_timer is None
+        assert visible_overlay._progress_timer is None
+        assert visible_overlay._auto_dismiss_timer is None
+        assert visible_overlay._geometry_debounce is None
+
+
+# ---------------------------------------------------------------------------
+# Phase C reviewer follow-ups: M1/M2/M3 + m1/m2
+# ---------------------------------------------------------------------------
+
+class TestReviewerFollowUps:
+    def test_add_final_noop_when_disabled(self, overlay):
+        overlay.set_enabled(False)
+        overlay.add_final("blocked")
+        assert overlay._segments == []
+
+    def test_add_final_empty_ignored(self, overlay):
+        overlay.add_final("")
+        assert overlay._segments == []
+
+    def test_caret_timer_stops_when_final_removes_partial(
+        self, visible_overlay
+    ):
+        visible_overlay.add_partial("live")
+        assert visible_overlay._caret_timer is not None
+        assert visible_overlay._caret_timer.isActive()
+        visible_overlay.add_final("done")
+        QApplication.processEvents()
+        assert not visible_overlay._caret_timer.isActive()
+
+    def test_caret_timer_stops_on_hide(self, visible_overlay):
+        visible_overlay.add_partial("live")
+        assert visible_overlay._caret_timer.isActive()
+        visible_overlay.hide()
+        QApplication.processEvents()
+        assert not visible_overlay._caret_timer.isActive()
+        # Finish fade-out path as well.
+        visible_overlay._on_fade_out_finished()
+        QApplication.processEvents()
+        assert not visible_overlay._caret_timer.isActive()
+
+    def test_caret_blink_stops_timer_without_partial(
+        self, visible_overlay
+    ):
+        visible_overlay.add_partial("live")
+        assert visible_overlay._caret_timer.isActive()
+        visible_overlay.add_final("done")
+        # Simulate a stray blink tick with no partial trailing.
+        visible_overlay._on_caret_blink()
+        assert not visible_overlay._caret_timer.isActive()
+
+    def test_focus_policies_no_steal(self, visible_overlay):
+        from PySide6.QtCore import Qt
+
+        assert visible_overlay._window.testAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating
+        )
+        assert visible_overlay._text_edit.focusPolicy() == Qt.FocusPolicy.NoFocus
+        assert visible_overlay._edit_line.focusPolicy() == Qt.FocusPolicy.ClickFocus
+
+    def test_edit_commit_clears_focus(self, visible_overlay):
+        received = []
+        visible_overlay.signals.edit_committed.connect(received.append)
+        visible_overlay.add_final("old")
+        visible_overlay._edit_line.setText("fixed")
+        visible_overlay._on_edit_return_pressed()
+        assert received == ["fixed"]
+        assert not visible_overlay._edit_line.hasFocus()
+
+    def test_programmatic_geometry_does_not_emit(
+        self, visible_overlay, qapp
+    ):
+        from PySide6.QtTest import QTest
+
+        received = []
+        visible_overlay.signals.geometry_changed.connect(
+            lambda x, y, w, h: received.append((x, y, w, h))
+        )
+        visible_overlay.set_geometry_from_settings(10, 20, 450, 200)
+        QApplication.processEvents()
+        QTest.qWait(450)
+        QApplication.processEvents()
+        assert received == []
+
+    def test_overlay_clamps_offscreen_xy(self, qapp):
+        from PySide6.QtWidgets import QApplication as _QA
+
+        ov = TranscriptOverlay()
+        try:
+            ov.set_geometry_from_settings(99999, 99999, 450, 200)
+            ov.show()
+            from PySide6.QtTest import QTest
+
+            QTest.qWait(50)
+            QApplication.processEvents()
+            geo = ov._window.geometry()
+            screen = _QA.primaryScreen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                assert geo.x() <= avail.x() + avail.width() - 100
+                assert geo.y() <= avail.y() + avail.height() - 50
+        finally:
+            ov.close()
+            QApplication.processEvents()
